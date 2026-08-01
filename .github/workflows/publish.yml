@@ -1,0 +1,59 @@
+name: publish
+
+# Tag a release to publish it:
+#   git tag v0.2.1 && git push origin v0.2.1
+#
+# Uses PyPI trusted publishing, so there is no token to manage. Add mlxsh as a
+# pending publisher at https://pypi.org/manage/account/publishing/ first:
+#   owner: <your github user>, repo: mlxsh,
+#   workflow: publish.yml, environment: pypi
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the version in the code
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          code=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('mlxsh.py').read_text()).group(1))")
+          test "$tag" = "$code" || { echo "tag $tag != mlxsh.py $code"; exit 1; }
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Build
+        run: |
+          python -m pip install --quiet build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # trusted publishing
+      contents: write        # attach the artefacts to the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

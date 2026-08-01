@@ -1,0 +1,21 @@
+# state lives in ~/.mlxsh, but keep the repo clean if MLXSH_HOME points here
+models.json
+server.json
+server.log*
+history
+
+# builds
+dist/
+build/
+*.egg-info/
+
+# tool caches
+.ruff_cache/
+
+# environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+.DS_Store

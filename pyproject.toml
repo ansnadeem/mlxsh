@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlxsh"
+version = "0.2.1"
+description = "Lightweight CLI for running local LLMs on Apple silicon: an MLX launcher and shell with an OpenAI-compatible endpoint"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Ans Nadeem" }]
+keywords = [
+    "mlx", "apple-silicon", "apple", "macos", "m1", "m2", "m3", "m4",
+    "llm", "local-llm", "local-ai", "inference", "server", "cli", "shell",
+    "openai-api", "openai-compatible", "vlm", "multimodal", "gguf-alternative",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Systems Administration",
+    "Environment :: MacOS X",
+]
+dependencies = [
+    "mlx-lm>=0.20",
+    "huggingface_hub>=0.26",
+]
+
+[project.optional-dependencies]
+vision = ["mlx-vlm>=0.1"]
+
+[project.urls]
+Homepage = "https://github.com/ansnadeem/mlxsh"
+Documentation = "https://github.com/ansnadeem/mlxsh#readme"
+Changelog = "https://github.com/ansnadeem/mlxsh/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ansnadeem/mlxsh/issues"
+Source = "https://github.com/ansnadeem/mlxsh"
+
+[project.scripts]
+mlxsh = "mlxsh:cli"
+
+[tool.setuptools]
+py-modules = ["mlxsh"]

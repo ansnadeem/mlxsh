@@ -1,0 +1,24 @@
+line-length = 88
+target-version = "py310"
+
+[lint]
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "W",      # warnings
+    "I",      # import order
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "PIE",
+    "RUF",
+]
+ignore = [
+    "E501",    # long lines are caught by the formatter, not worth failing on
+    "B008",    # function call in default argument: not used here
+    "RUF001",  # ambiguous unicode: the picker draws box characters
+]
+
+[lint.per-file-ignores]
+# Tests reach into module internals and monkeypatch on purpose.
+"tests/*" = ["B010", "RUF012"]
