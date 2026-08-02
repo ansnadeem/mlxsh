@@ -130,9 +130,18 @@ help                     this list
 `lm qwen3.6`, `vision gemma-4-31b`. A command that prints `error:` exits
 non-zero.
 
-In the shell, leaving an argument off opens an arrow-key picker: up/down or
-j/k, type to filter, enter selects, space marks several, esc cancels. A line
-pinned to the top shows what is loaded; `config status_bar off` hides it.
+`mlxsh <command> -h` explains one command with examples. Errors go to stderr
+and exit non-zero, so a command composes in a pipeline.
+
+Every command works both one-shot and in the shell. The shell adds what only
+makes sense while you are sitting in it: a picker whenever you leave an
+argument off, a command list on an empty line, tab completion, history, a chat
+loop, and a line pinned to the top showing what is loaded (`config status_bar
+off` hides it). One-shot runs never open a picker, so scripts stay
+predictable.
+
+In a picker: up/down or j/k move, type to filter, enter selects, space marks
+several, esc cancels.
 
 `browse` estimates each repo's memory from its safetensors dtypes, so 4-bit
 packing is counted correctly, and hides what will not fit unless you ask for
