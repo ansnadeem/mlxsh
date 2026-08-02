@@ -37,6 +37,11 @@ wheel.
 - New behaviour needs a test. The tests never touch the network, download a
   model, or need a terminal.
 
+## Review
+
+Pull requests are reviewed by the owners in
+[.github/CODEOWNERS](.github/CODEOWNERS), who are requested automatically.
+
 ## Reporting a bug
 
 Include the output of `mlxsh doctor`, the command you ran, and what happened.
