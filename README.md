@@ -27,8 +27,9 @@ mlxsh setup
 ```
 
 The first line installs [uv](https://github.com/astral-sh/uv) if it is missing,
-then mlxsh. The second installs `mlx-lm`, `mlx-vlm` and `huggingface_hub` into
-`~/.mlxsh/.venv`, about 300 MB. `mlxsh doctor` shows what it found.
+then mlxsh with both engines. The second is only needed if something is
+missing: it installs `mlx-lm`, `mlx-vlm` and `huggingface_hub` into whichever
+environment mlxsh runs from, about 300 MB. `mlxsh doctor` shows what it found.
 
 State lives in `~/.mlxsh/`: the registry, one file per running server, logs and
 history. Override with `MLXSH_HOME`.
@@ -117,7 +118,7 @@ chat                     a chat loop
 
 config                   settings, and where each value comes from
 doctor                   versions, paths, machine
-setup [--no-vision]      install the MLX packages
+setup                    install the MLX packages
 edit                     open the registry in $EDITOR
 help                     this list
 

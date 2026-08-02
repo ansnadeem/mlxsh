@@ -834,21 +834,32 @@ class Bootstrap(TempHome):
     """setup builds the environment that mlxsh re-execs into."""
 
     def test_uv_path_supplies_its_own_python(self):
-        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), "/opt/bin/uv", True)
+        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), "/opt/bin/uv")
         self.assertEqual(cmds[0][:3], ["/opt/bin/uv", "venv", "--python"])
-        self.assertIn("mlx-vlm", cmds[1])
-        self.assertIn("mlx-lm", cmds[1])
-        self.assertIn("huggingface_hub", cmds[1])
+        for pkg in ("mlx-lm", "mlx-vlm", "huggingface_hub"):
+            self.assertIn(pkg, cmds[1])
 
     def test_without_uv_it_uses_this_interpreter(self):
-        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), None, False)
+        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), None)
         self.assertEqual(cmds[0][:3], [sys.executable, "-m", "venv"])
         self.assertTrue(cmds[1][0].endswith("/.venv/bin/pip"))
-        self.assertNotIn("mlx-vlm", cmds[1])
+
+    def test_topping_up_an_environment_that_already_works(self):
+        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), "/opt/bin/uv",
+                                    into="/opt/tools/mlxsh/bin/python")
+        self.assertEqual(len(cmds), 1)  # no venv is created
+        self.assertEqual(cmds[0][:4],
+                         ["/opt/bin/uv", "pip", "install", "--python"])
+        self.assertIn("mlx-vlm", cmds[0])
+
+    def test_topping_up_without_uv(self):
+        cmds = mlxsh.setup_commands(Path("/tmp/x/.venv"), None,
+                                    into="/opt/env/bin/python")
+        self.assertEqual(cmds[0][:3], ["/opt/env/bin/python", "-m", "pip"])
 
     def test_the_venv_is_where_the_re_exec_looks(self):
         venv = mlxsh.HOME / ".venv"
-        cmds = mlxsh.setup_commands(venv, None, True)
+        cmds = mlxsh.setup_commands(venv, None)
         self.assertIn(str(venv), cmds[0])
 
     def test_too_old_without_uv_is_refused(self):

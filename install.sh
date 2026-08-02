@@ -4,7 +4,7 @@
 #   curl -LsSf https://raw.githubusercontent.com/ansnadeem/mlxsh/main/install.sh | sh
 #
 # Installs uv if it is missing (uv brings its own Python, so nothing else is
-# required), then installs mlxsh as a tool. Pass --vision to include mlx-vlm.
+# required), then installs mlxsh as a tool. Both modes come with it.
 #
 #   MLXSH_REF=v0.2.1   install a tag or branch instead of PyPI
 #   --dry-run          print the commands instead of running them
@@ -12,12 +12,10 @@
 set -eu
 
 PKG="mlxsh"
-EXTRA=""
 DRY=""
 
 for arg in "$@"; do
     case "$arg" in
-        --vision) EXTRA="[vision]" ;;
         --dry-run) DRY="echo   would run:" ;;
         -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
@@ -47,7 +45,7 @@ REPO="git+https://github.com/ansnadeem/mlxsh"
 if [ -n "${MLXSH_REF:-}" ]; then
     TARGET="${REPO}@${MLXSH_REF}"
 else
-    TARGET="${PKG}${EXTRA}"
+    TARGET="${PKG}"
 fi
 
 echo "installing $TARGET"

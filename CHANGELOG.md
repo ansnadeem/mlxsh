@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `mlx-vlm` is a dependency rather than an optional extra, so an install can
+  always serve both modes. `uv tool install` left it out, and vision mode then
+  failed with an error telling you to run pip, which a uv-managed environment
+  does not have.
+- `setup` installs into the environment mlxsh is running from when that
+  environment already works, instead of always building `~/.mlxsh/.venv`
+  beside it.
+
 - Each server now sees a Hugging Face cache view holding only its own model, so
   `GET /v1/models` lists that model rather than everything on the machine, and
   a stray request cannot swap the model out or download another one.

@@ -30,13 +30,13 @@ classifiers = [
     "Topic :: System :: Systems Administration",
     "Environment :: MacOS X",
 ]
+# Vision mode is not optional: mlxsh advertises both modes, so an install that
+# cannot serve one of them is a broken install.
 dependencies = [
     "mlx-lm>=0.20",
+    "mlx-vlm>=0.1",
     "huggingface_hub>=0.26",
 ]
-
-[project.optional-dependencies]
-vision = ["mlx-vlm>=0.1"]
 
 [project.urls]
 Homepage = "https://github.com/ansnadeem/mlxsh"

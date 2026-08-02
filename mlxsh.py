@@ -1206,14 +1206,16 @@ def serve(mode: str, repo: str | None = None, extra: list[str] | None = None,
 
     if mode == "vision":
         if not have_module("mlx_vlm"):
-            warn("vision mode needs mlx-vlm: pip install mlx-vlm")
+            warn("vision mode needs mlx-vlm")
+            print(dim("  run: mlxsh setup"))
             return
         cfg = local_config(repo)
         if cfg is not None and not is_vision_config(cfg):
             warn(f"{short(repo)} has no vision tower, run it in lm mode")
             return
     elif not have_module("mlx_lm"):
-        warn("lm mode needs mlx-lm: pip install mlx-lm")
+        warn("lm mode needs mlx-lm")
+        print(dim("  run: mlxsh setup"))
         return
 
     if not is_downloaded(repo):
@@ -1913,7 +1915,7 @@ def help_text() -> str:
                              config status_bar off hides the live line at the
                              top of the shell
     doctor                   versions, paths, machine
-    setup [--no-vision]      install mlx-lm and mlx-vlm into ~/.mlxsh/.venv
+    setup                    install the MLX packages where mlxsh runs
 
   {bold('keys in a picker')}
     up/down or j/k move, pgup pgdn home end jump, type to filter,
@@ -2025,7 +2027,7 @@ class Ctl:
     def do_doctor(self, a): doctor()
 
     def do_setup(self, a):
-        setup(vision="--no-vision" not in a, yes="-y" in a or "--yes" in a)
+        setup(yes="-y" in a or "--yes" in a)
     def do_log(self, a):
         a, target, _ = extract_on(a)
         lines = next((int(x) for x in a if x.isdigit() and len(x) < 5), 40)
@@ -2587,9 +2589,14 @@ def ensure_interpreter():
 MIN_ENGINE_PYTHON = (3, 10)
 
 
-def setup_commands(venv: Path, uv: str | None, vision: bool) -> list[list[str]]:
-    """How to build the environment mlxsh re-execs into."""
-    pkgs = ["mlx-lm", "huggingface_hub"] + (["mlx-vlm"] if vision else [])
+def setup_commands(venv: Path, uv: str | None,
+                   into: str | None = None) -> list[list[str]]:
+    """How to build, or top up, the environment mlxsh runs models from."""
+    pkgs = ["mlx-lm", "mlx-vlm", "huggingface_hub"]
+    if into:  # an environment that already works, missing a package
+        if uv:
+            return [[uv, "pip", "install", "--python", into, *pkgs]]
+        return [[into, "-m", "pip", "install", "--upgrade", *pkgs]]
     if uv:  # uv supplies a python of its own, so nothing else is needed
         return [[uv, "venv", "--python", "3.12", str(venv)],
                 [uv, "pip", "install", "--python", str(venv / "bin" / "python"),
@@ -2598,8 +2605,8 @@ def setup_commands(venv: Path, uv: str | None, vision: bool) -> list[list[str]]:
             [str(venv / "bin" / "pip"), "install", "--upgrade", *pkgs]]
 
 
-def setup(vision: bool = True, yes: bool = False):
-    """Install the MLX packages into ~/.mlxsh/.venv, which mlxsh then uses."""
+def setup(yes: bool = False):
+    """Install the MLX packages into the environment mlxsh runs models from."""
     ensure_home()
     venv = HOME / ".venv"
     uv = shutil.which("uv")
@@ -2608,14 +2615,19 @@ def setup(vision: bool = True, yes: bool = False):
              f"and uv is not installed")
         print(dim("  install uv first: curl -LsSf https://astral.sh/uv/install.sh | sh"))
         return
-    if venv.exists():
-        print(dim(f"  {venv} already exists, updating it"))
-    print(f"  installing mlx-lm{', mlx-vlm' if vision else ''} "
-          f"and huggingface_hub into {venv}")
+
+    # If this interpreter already runs models, top it up rather than building a
+    # second environment beside it: an install missing only mlx-vlm is the
+    # common case.
+    into = sys.executable if have_module("mlx_lm") else None
+    where = Path(sys.executable).parent.parent if into else venv
+    if into and not uv:
+        into = sys.executable
+    print(f"  installing mlx-lm, mlx-vlm and huggingface_hub into {where}")
     print(dim(f"  using {'uv' if uv else sys.executable}, a few hundred MB"))
     if not yes and not confirm("  go ahead?", True):
         return
-    for cmd in setup_commands(venv, uv, vision):
+    for cmd in setup_commands(venv, uv, into):
         if subprocess.run(cmd).returncode != 0:
             warn(f"failed: {' '.join(cmd)}")
             return
