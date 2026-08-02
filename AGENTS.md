@@ -137,10 +137,36 @@ user what you are about to fetch.
 
 ## Calling the endpoint
 
-Any OpenAI-compatible client works. The `model` field **must be the exact repo
-id** from `mlxsh status --json`. A wrong or shortened name makes the server try
-to fetch that name from the Hub, and you get a confusing `401 Repository Not
-Found` instead of a completion.
+Any OpenAI-compatible client works.
+
+### Which model to send
+
+**Send `"model": "default_model"`.** mlx_lm maps that alias to whatever the
+server on that port was started with, so a client pinned to a port always gets
+that model and never has to know a repo id.
+
+```sh
+curl -s http://127.0.0.1:41277/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default_model","messages":[{"role":"user","content":"hello"}]}'
+```
+
+Two things to know, because both mislead agents:
+
+- **`GET /v1/models` lists your whole Hugging Face cache, not what is loaded.**
+  It is a directory of what the server *could* load. Five entries there does
+  not mean five models are running. For what is actually loaded, and on which
+  port, use `mlxsh status --json`.
+- **Naming a different model in a request loads it, replacing the resident
+  one.** mlx_lm keeps one model per port and swaps on demand: a request for
+  another cached repo costs a full load (seconds to a minute) and evicts what
+  was there. Anything invented is treated as a Hub repo id and fails with a
+  confusing `401 Repository Not Found`.
+
+So: pin with `default_model`, or send the exact repo id from
+`mlxsh status --json` if you want to be explicit. Do not read `/v1/models` to
+decide what to use. If a client does swap a server's model out from under it,
+`mlxsh status` still reports the model that server was launched with.
 
 ```sh
 curl -s http://127.0.0.1:41277/v1/chat/completions \
