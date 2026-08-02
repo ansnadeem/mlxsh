@@ -866,6 +866,55 @@ class Bootstrap(TempHome):
         self.assertFalse((mlxsh.HOME / ".venv").exists())
 
 
+class CacheView(TempHome):
+    """A server should advertise its own model, not the whole cache."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = tempfile.TemporaryDirectory()
+        os.environ["HF_HUB_CACHE"] = self.cache.name
+        self.repo_dir = Path(self.cache.name) / "models--acme--thing"
+        (self.repo_dir / "snapshots" / "abc").mkdir(parents=True)
+
+    def tearDown(self):
+        os.environ.pop("HF_HUB_CACHE", None)
+        self.cache.cleanup()
+        super().tearDown()
+
+    def test_view_holds_only_that_model(self):
+        view = mlxsh.cache_view(41277, "acme/thing")
+        self.assertIsNotNone(view)
+        entries = list(view.iterdir())
+        self.assertEqual([e.name for e in entries], ["models--acme--thing"])
+        self.assertTrue(entries[0].is_symlink())
+        self.assertEqual(entries[0].resolve(), self.repo_dir.resolve())
+
+    def test_one_view_per_port(self):
+        a = mlxsh.cache_view(41277, "acme/thing")
+        b = mlxsh.cache_view(41278, "acme/thing")
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.exists() and b.exists())
+
+    def test_rebuilding_a_view_does_not_pile_up(self):
+        mlxsh.cache_view(41277, "acme/thing")
+        view = mlxsh.cache_view(41277, "acme/thing")
+        self.assertEqual(len(list(view.iterdir())), 1)
+
+    def test_missing_repo_gets_no_view(self):
+        self.assertIsNone(mlxsh.cache_view(41277, "acme/absent"))
+
+    def test_dropping_a_view(self):
+        view = mlxsh.cache_view(41277, "acme/thing")
+        mlxsh.drop_cache_view(41277)
+        self.assertFalse(view.exists())
+        mlxsh.drop_cache_view(41277)  # twice is fine
+
+    def test_the_setting_is_on_by_default(self):
+        self.assertTrue(mlxsh.setting("pin_model"))
+        mlxsh.set_setting("pin_model", "off")
+        self.assertFalse(mlxsh.setting("pin_model"))
+
+
 class ServerCommandMatching(unittest.TestCase):
     """What counts as an mlx server, since stop signals a process group."""
 
