@@ -71,12 +71,16 @@ Any OpenAI client works. There is no API key.
 ```sh
 curl -s http://127.0.0.1:41277/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"mlx-community/gemma-4-26B-A4B-it-qat-4bit",
-       "messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"default_model","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-The `model` field must be the exact repo id, which `mlxsh status --json`
-reports. The servers have no authentication and bind to `127.0.0.1`;
+`default_model` means whatever that port was started with, so a client pinned
+to a port needs no repo id. An exact repo id works too, and `mlxsh status
+--json` reports it. Note that `GET /v1/models` lists your whole Hugging Face
+cache rather than what is loaded, and that asking a server for a different
+model makes it load that one in place of the current one.
+
+The servers have no authentication and bind to `127.0.0.1`;
 `config host 0.0.0.0` exposes them to your network.
 
 ## Commands

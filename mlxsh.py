@@ -1325,6 +1325,10 @@ def servers_json() -> str:
         rss, up = stats.get(st["pid"], (0, "?"))
         host = st.get("host", setting("host"))
         rows.append({"model": st.get("model") or "", "mode": st["mode"],
+                     # mlx_lm maps this alias to whatever the server was
+                     # started with, so a client can pin to this port without
+                     # naming a repo id
+                     "alias": "default_model",
                      "engine": st.get("engine", ""), "host": host,
                      "port": st["port"], "pid": st["pid"],
                      "endpoint": f"http://{host}:{st['port']}/v1",
