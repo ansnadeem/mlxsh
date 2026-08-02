@@ -76,9 +76,14 @@ curl -s http://127.0.0.1:41277/v1/chat/completions \
 
 `default_model` means whatever that port was started with, so a client pinned
 to a port needs no repo id. An exact repo id works too, and `mlxsh status
---json` reports it. Note that `GET /v1/models` lists your whole Hugging Face
-cache rather than what is loaded, and that asking a server for a different
-model makes it load that one in place of the current one.
+--json` reports it.
+
+`GET /v1/models` on a port lists that one model. mlx_lm builds that list by
+scanning the Hugging Face cache, so a server started against the real cache
+advertises every model on the machine and clients cannot tell which is loaded;
+mlxsh gives each server a cache view holding only its own model. That also
+stops a stray request from swapping the model out or downloading another one.
+`config pin_model off` restores mlx_lm's behaviour.
 
 The servers have no authentication and bind to `127.0.0.1`;
 `config host 0.0.0.0` exposes them to your network.
@@ -154,6 +159,7 @@ Flag beats environment beats registry beats default.
 | `start_timeout` | `MLXSH_START_TIMEOUT` | `900` |
 | `reply_timeout` | `MLXSH_REPLY_TIMEOUT` | `600` |
 | `when_busy` | `MLXSH_WHEN_BUSY` | `new` |
+| `pin_model` | `MLXSH_PIN_MODEL` | `on` |
 | `status_bar` | `MLXSH_STATUS_BAR` | `on` |
 | `bar_interval` | `MLXSH_BAR_INTERVAL` | `2.0` |
 

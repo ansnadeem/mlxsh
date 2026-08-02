@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Each server now sees a Hugging Face cache view holding only its own model, so
+  `GET /v1/models` lists that model rather than everything on the machine, and
+  a stray request cannot swap the model out or download another one.
+  `config pin_model off` restores mlx_lm's behaviour.
+- `status --json` reports the `default_model` alias, which mlx_lm maps to
+  whatever a server was started with.
+
 ## 0.2.1
 
 Fixes from an architecture review, documentation for automated callers, and
