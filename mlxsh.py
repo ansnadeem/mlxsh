@@ -69,6 +69,7 @@ DEFAULTS = {
     "start_timeout": 900,
     "reply_timeout": 600,
     "when_busy": "new",
+    "pin_model": True,
     "status_bar": True,
     "bar_interval": 2.0,
     "serve_args": {"lm": ["--max-tokens", "4096"],
@@ -92,6 +93,8 @@ SETTINGS = {
                       "seconds to wait for a reply from a server"),
     "when_busy": ("MLXSH_WHEN_BUSY", str,
                   "port already has a model: new, replace or ask"),
+    "pin_model": ("MLXSH_PIN_MODEL", lambda v: boolean(v),
+                  "a server sees only its own model, and cannot swap (on/off)"),
     "status_bar": ("MLXSH_STATUS_BAR", lambda v: boolean(v),
                    "pin a live line at the top of the shell (on/off)"),
     "bar_interval": ("MLXSH_BAR_INTERVAL", float,
@@ -1025,6 +1028,7 @@ def stop_one(st: dict) -> int:
         if not pid_alive(pid):
             break
     state_path(st["port"]).unlink(missing_ok=True)
+    drop_cache_view(st["port"])
     print(green(" stopped") + (dim(f"   {gb(freed)} freed") if freed else ""))
     return freed
 
@@ -1081,6 +1085,32 @@ def warmup(host: str, port: int, repo: str) -> bool:
 def log_path(port: int | None = None) -> Path:
     """One log per server, so several models do not interleave."""
     return (HOME / "logs" / f"{port}.log") if port else LOG
+
+
+def cache_view(port: int, repo: str) -> Path | None:
+    """A cache directory holding only this model.
+
+    mlx_lm builds /v1/models by scanning the Hugging Face cache, so a server
+    started against the real cache advertises every model on the machine and a
+    client cannot tell which one is loaded. Pointing HF_HUB_CACHE at a
+    directory with a single symlink narrows that list to the model actually
+    being served, and keeps a stray request from swapping it out.
+    """
+    real = hub_cache() / ("models--" + repo.replace("/", "--"))
+    if not real.exists():
+        return None
+    view = HOME / "views" / str(port)
+    shutil.rmtree(view, ignore_errors=True)
+    view.mkdir(parents=True, exist_ok=True)
+    try:
+        (view / real.name).symlink_to(real, target_is_directory=True)
+    except OSError:
+        return None
+    return view
+
+
+def drop_cache_view(port: int):
+    shutil.rmtree(HOME / "views" / str(port), ignore_errors=True)
 
 
 def rotate_log(path: Path | None = None):
@@ -1239,12 +1269,20 @@ def serve(mode: str, repo: str | None = None, extra: list[str] | None = None,
     log = log_path(port)
     log.parent.mkdir(parents=True, exist_ok=True)
     rotate_log(log)
+    env = dict(os.environ)
+    view = cache_view(port, repo) if setting("pin_model") else None
+    if view:
+        # only this model is visible to the server, and it cannot reach the
+        # Hub to fetch another one
+        env["HF_HUB_CACHE"] = str(view)
+        env["HF_HUB_OFFLINE"] = "1"
+
     with log.open("a") as fh:
         fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} "
                  f"start {mode} {repo} ===\n")
         fh.flush()
         proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=str(HOME),
-                                start_new_session=True)
+                                start_new_session=True, env=env)
 
     write_state({"pid": proc.pid, "mode": mode, "model": repo, "host": host,
                  "port": port, "engine": engine, "log": str(log),

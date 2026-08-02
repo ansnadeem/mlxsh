@@ -153,20 +153,18 @@ curl -s http://127.0.0.1:41277/v1/chat/completions \
 
 Two things to know, because both mislead agents:
 
-- **`GET /v1/models` lists your whole Hugging Face cache, not what is loaded.**
-  It is a directory of what the server *could* load. Five entries there does
-  not mean five models are running. For what is actually loaded, and on which
-  port, use `mlxsh status --json`.
-- **Naming a different model in a request loads it, replacing the resident
-  one.** mlx_lm keeps one model per port and swaps on demand: a request for
-  another cached repo costs a full load (seconds to a minute) and evicts what
-  was there. Anything invented is treated as a Hub repo id and fails with a
-  confusing `401 Repository Not Found`.
+- **`GET /v1/models` returns the one model that port serves.** mlx_lm builds
+  that list from the Hugging Face cache, so left alone it advertises every
+  model on the machine. mlxsh starts each server against a cache view holding
+  only its own model, so the list matches reality. `config pin_model off`
+  turns that off and restores the full listing.
+- **A pinned server will not swap.** Asking it for another model returns an
+  error rather than loading it, so no request can evict what you are using or
+  start a download. Unpinned, mlx_lm loads the named model in place of the
+  resident one, which costs a full load and can surprise other clients.
 
-So: pin with `default_model`, or send the exact repo id from
-`mlxsh status --json` if you want to be explicit. Do not read `/v1/models` to
-decide what to use. If a client does swap a server's model out from under it,
-`mlxsh status` still reports the model that server was launched with.
+Use `default_model`, or the exact repo id from `mlxsh status --json`. Either
+works; the alias means a client pinned to a port needs no repo id at all.
 
 ```sh
 curl -s http://127.0.0.1:41277/v1/chat/completions \
