@@ -42,14 +42,20 @@ if ! command -v uv >/dev/null 2>&1; then
     export PATH
 fi
 
+REPO="git+https://github.com/ansnadeem/mlxsh"
+
 if [ -n "${MLXSH_REF:-}" ]; then
-    TARGET="git+https://github.com/ansnadeem/mlxsh@${MLXSH_REF}"
+    TARGET="${REPO}@${MLXSH_REF}"
 else
     TARGET="${PKG}${EXTRA}"
 fi
 
 echo "installing $TARGET"
-$DRY uv tool install --force "$TARGET"
+if ! $DRY uv tool install --force "$TARGET"; then
+    # not on PyPI yet, or the release is behind: take it from the repository
+    echo "falling back to $REPO"
+    $DRY uv tool install --force "$REPO"
+fi
 
 if [ -z "$DRY" ]; then
     echo
