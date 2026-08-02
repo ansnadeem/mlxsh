@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `<command> -h` explains one command with examples, and never acts. It used
+  to be taken as an argument: `lm --help` stopped a running server and started
+  a model, `rm --help` tried to delete a model of that name, and
+  `browse --help` searched the Hub for it.
+- Errors and hints go to stderr, so piping a command gives you its output
+  alone. A typo suggests the nearest command.
+- `help <command>` in the shell, and a leading `mlxsh` is ignored there, since
+  people type it out of habit.
+- `mlxsh` on a machine with no models points at `browse`, and `setup` says to
+  start mlxsh again when it installed the packages this process was missing.
+
 - `mlx-vlm` is a dependency rather than an optional extra, so an install can
   always serve both modes. `uv tool install` left it out, and vision mode then
   failed with an error telling you to run pip, which a uv-managed environment

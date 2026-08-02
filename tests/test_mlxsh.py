@@ -22,6 +22,14 @@ mlxsh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mlxsh)
 
 
+@contextlib.contextmanager
+def captured():
+    """Both streams: output goes to stdout, diagnostics to stderr."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        yield out, err
+
+
 class TempHome(unittest.TestCase):
     """Point the registry and state at a scratch directory."""
 
@@ -170,9 +178,9 @@ class Resolve(unittest.TestCase):
         self.assertEqual(mlxsh.resolve(self.reg, "31b")["label"], "Gemma 4 31B")
 
     def test_ambiguous_returns_none(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertIsNone(mlxsh.resolve(self.reg, "gemma"))
-        self.assertIn("matches 2", out.getvalue())
+        self.assertIn("matches 2", err.getvalue())
 
     def test_empty(self):
         self.assertIsNone(mlxsh.resolve(self.reg, ""))
@@ -297,7 +305,7 @@ class Settings(TempHome):
         self.assertEqual(mlxsh.setting_with_source("port"), (41277, "default"))
 
     def test_rejects_bad_values(self):
-        with contextlib.redirect_stdout(io.StringIO()):
+        with captured():
             self.assertFalse(mlxsh.set_setting("port", "not-a-number"))
             self.assertFalse(mlxsh.set_setting("port", "70000"))
             self.assertFalse(mlxsh.set_setting("mem_comfy", "2"))
@@ -399,12 +407,12 @@ class ServerIdentity(TempHome):
         mlxsh.pid_command = lambda pid: "python -m http.server 41277"
         os.kill = lambda pid, sig: killed.append((pid, sig))
         try:
-            with contextlib.redirect_stdout(io.StringIO()) as out:
+            with captured() as (_out, err):
                 self.assertFalse(mlxsh.stop_server())
         finally:
             mlxsh.port_owner, os.kill = saved_owner, saved_kill
         self.assertEqual(killed, [])
-        self.assertIn("not an mlx server", out.getvalue())
+        self.assertIn("not an mlx server", err.getvalue())
 
     def test_adopts_a_server_started_outside_the_shell(self):
         saved_owner = mlxsh.port_owner
@@ -484,9 +492,9 @@ class MultipleServers(TempHome):
     def test_stop_without_a_target_needs_one_when_several_run(self):
         self.add(41277, "a/one")
         self.add(41300, "a/two")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertFalse(mlxsh.stop_server())
-        self.assertIn("name one", out.getvalue())
+        self.assertIn("name one", err.getvalue())
 
     def test_stop_uses_the_chooser_when_several_run(self):
         self.add(41277, "a/one")
@@ -563,7 +571,7 @@ class MultipleServers(TempHome):
             self.assertEqual(mlxsh.choose_port("a/two"), 41278)
 
     def test_when_busy_only_accepts_known_values(self):
-        with contextlib.redirect_stdout(io.StringIO()):
+        with captured():
             self.assertFalse(mlxsh.set_setting("when_busy", "explode"))
         self.assertEqual(mlxsh.setting("when_busy"), "new")
 
@@ -634,15 +642,15 @@ class Targeting(TempHome):
     def test_several_servers_without_a_target_explain_themselves(self):
         self.add(41277, "org/gemma")
         self.add(41278, "org/qwen")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertIsNone(mlxsh.target_server(verb="ask"))
-        self.assertIn("ask --on", out.getvalue())
+        self.assertIn("ask --on", err.getvalue())
 
     def test_unknown_target(self):
         self.add(41277, "org/gemma")
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertIsNone(mlxsh.target_server("nope"))
-        self.assertIn("no running server matches", out.getvalue())
+        self.assertIn("no running server matches", err.getvalue())
 
     def test_chooser_used_when_several_run(self):
         self.add(41277, "org/gemma")
@@ -701,17 +709,17 @@ class ApiStreaming(TempHome):
         self.assertIn("Hello", out.getvalue())
 
     def test_unreachable_server_reports_the_failure(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             got = mlxsh.api_stream({"port": 9, "host": "127.0.0.1", "model": "a/b"},
                                    [{"role": "user", "content": "hi"}])
         self.assertIsNone(got)
-        self.assertIn("request failed", out.getvalue())
+        self.assertIn("request failed", err.getvalue())
 
     def test_images_need_a_vision_server(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertFalse(mlxsh.ask_server({"port": 1, "mode": "lm",
                                                "model": "a/b"}, "hi", ["x.png"]))
-        self.assertIn("images need a vision one", out.getvalue())
+        self.assertIn("images need a vision one", err.getvalue())
 
     def test_image_payload_is_a_data_url(self):
         png = Path(self._tmp.name) / "x.png"
@@ -868,12 +876,12 @@ class Bootstrap(TempHome):
         version = sys.version_info
         try:
             mlxsh.sys.version_info = (3, 9, 6)
-            with contextlib.redirect_stdout(io.StringIO()) as out:
+            with captured() as (_out, err):
                 mlxsh.setup(yes=True)
         finally:
             mlxsh.sys.version_info = version
             mlxsh.shutil.which = saved
-        self.assertIn("too old", out.getvalue())
+        self.assertIn("too old", err.getvalue())
         self.assertFalse((mlxsh.HOME / ".venv").exists())
 
 
@@ -924,6 +932,61 @@ class CacheView(TempHome):
         self.assertTrue(mlxsh.setting("pin_model"))
         mlxsh.set_setting("pin_model", "off")
         self.assertFalse(mlxsh.setting("pin_model"))
+
+
+class HelpAndStreams(TempHome):
+    """Conventions a command line is expected to follow."""
+
+    def test_asking_for_help_never_acts(self):
+        acted = []
+        ctl = mlxsh.Ctl(tui=False)
+        saved = mlxsh.serve
+        mlxsh.serve = lambda *a, **k: acted.append(a)
+        try:
+            for line in ("lm --help", "lm -h", "vision --help"):
+                with captured() as (out, _err):
+                    mlxsh.dispatch(ctl, line, interactive=False)
+                self.assertIn("Serve a model", out.getvalue())
+        finally:
+            mlxsh.serve = saved
+        self.assertEqual(acted, [])
+
+    def test_help_for_a_destructive_command_deletes_nothing(self):
+        removed = []
+        ctl = mlxsh.Ctl(tui=False)
+        saved = mlxsh.remove
+        mlxsh.remove = lambda *a, **k: removed.append(a)
+        try:
+            with captured() as (out, _err):
+                mlxsh.dispatch(ctl, "rm --help", interactive=False)
+        finally:
+            mlxsh.remove = saved
+        self.assertEqual(removed, [])
+        self.assertIn("Delete a model", out.getvalue())
+
+    def test_every_command_documents_itself(self):
+        for cmd in mlxsh.COMMANDS:
+            if cmd in ("help", "exit"):
+                continue
+            self.assertIn(cmd, mlxsh.COMMAND_HELP, cmd)
+            usage, what, examples = mlxsh.COMMAND_HELP[cmd]
+            self.assertTrue(usage.startswith(cmd), cmd)
+            self.assertTrue(what.endswith("."), cmd)
+            self.assertTrue(all(e.startswith("mlxsh ") for e in examples), cmd)
+
+    def test_diagnostics_go_to_stderr(self):
+        with captured() as (out, err):
+            mlxsh.warn("something broke")
+            mlxsh.note("  a hint")
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("something broke", err.getvalue())
+        self.assertIn("a hint", err.getvalue())
+
+    def test_a_typo_suggests_the_command(self):
+        ctl = mlxsh.Ctl(tui=False)
+        with captured() as (_out, err):
+            mlxsh.dispatch(ctl, "statsu", interactive=False)
+        self.assertIn("did you mean status", err.getvalue())
 
 
 class ServerCommandMatching(unittest.TestCase):
@@ -984,9 +1047,9 @@ class RegistryTypes(TempHome):
         reg = mlxsh.load_registry()
         reg["port"] = "eighty eighty"
         mlxsh.save_registry(reg)
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with captured() as (_out, err):
             self.assertEqual(mlxsh.setting("port"), 41277)
-        self.assertIn("not a valid", out.getvalue())
+        self.assertIn("not a valid", err.getvalue())
 
 
 class LogTail(TempHome):

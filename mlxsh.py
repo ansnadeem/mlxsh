@@ -19,6 +19,7 @@ MIT licensed. https://github.com/ansnadeem/mlxsh
 from __future__ import annotations
 
 import atexit
+import difflib
 import functools
 import json
 import os
@@ -222,8 +223,14 @@ FAILED: list[str] = []
 
 
 def warn(msg: str):
+    # diagnostics on stderr, so piping a command gives you its output alone
     FAILED.append(msg)
-    print(red("error: ") + msg)
+    print(red("error: ") + msg, file=sys.stderr)
+
+
+def note(msg: str):
+    """A hint that belongs with an error, not with the output."""
+    print(msg, file=sys.stderr)
 
 
 def die(msg: str, code: int = 1):
@@ -1045,7 +1052,7 @@ def stop_server(target: str | None = None, quiet: bool = False,
             print_servers(list_servers())
         elif busy:
             warn(f"port {port} is held by pid {busy}, which is not an mlx server")
-            print(dim(f"  {pid_command(busy)[:100]}"))
+            note(dim(f"  {pid_command(busy)[:100]}"))
         elif not quiet:
             print(dim("  no server running"))
         return False
@@ -1207,7 +1214,7 @@ def serve(mode: str, repo: str | None = None, extra: list[str] | None = None,
     if mode == "vision":
         if not have_module("mlx_vlm"):
             warn("vision mode needs mlx-vlm")
-            print(dim("  run: mlxsh setup"))
+            note(dim("  run: mlxsh setup"))
             return
         cfg = local_config(repo)
         if cfg is not None and not is_vision_config(cfg):
@@ -1215,7 +1222,7 @@ def serve(mode: str, repo: str | None = None, extra: list[str] | None = None,
             return
     elif not have_module("mlx_lm"):
         warn("lm mode needs mlx-lm")
-        print(dim("  run: mlxsh setup"))
+        note(dim("  run: mlxsh setup"))
         return
 
     if not is_downloaded(repo):
@@ -1740,14 +1747,14 @@ def api_stream(st: dict, messages: list[dict], max_tokens: int = 2048,
     print()
     if not out and thinking:
         warn("the model spent its whole budget reasoning, no answer came back")
-        print(dim("  raise it with: config ask_args, or ask a simpler question"))
+        note(dim("  raise it with: config ask_args, or ask a simpler question"))
     return "".join(out)
 
 
 def ask_server(st: dict, prompt: str, images: list[str]) -> bool:
     if images and st.get("mode") != "vision":
         warn(f"the server on :{st['port']} is lm mode, images need a vision one")
-        print(dim("  start one with: vision <model>, or use --load"))
+        note(dim("  start one with: vision <model>, or use --load"))
         return False
     content = prompt if not images else \
         [{"type": "text", "text": prompt}, *[image_payload(i) for i in images]]
@@ -1917,11 +1924,20 @@ def help_text() -> str:
     doctor                   versions, paths, machine
     setup                    install the MLX packages where mlxsh runs
 
-  {bold('keys in a picker')}
-    up/down or j/k move, pgup pgdn home end jump, type to filter,
+  {bold('the shell')}
+    Every command works either way. The shell adds the things that only make
+    sense while you sit there: pickers when you leave an argument off, a
+    command list on an empty line, tab completion, history, a live line at the
+    top showing what is loaded, and a chat loop. One-shot runs never open a
+    picker, so scripts stay predictable.
+
+    In a picker: up/down or j/k move, pgup pgdn home end jump, type to filter,
     enter selects, space marks in multi-select, esc clears the filter or cancels
 
-  model can be a repo id, a number from ls, or a unique substring
+  {bold('anywhere')}
+    <command> -h             what that command does, with examples
+    model can be a repo id, a number from ls, or a unique substring
+    errors go to stderr and exit non-zero, output goes to stdout
 
   {dim('https://github.com/ansnadeem/mlxsh')}
 """
@@ -2020,7 +2036,15 @@ class Ctl:
         self.reg = adopt_cached_models(load_registry(refresh=True))
         return self.reg
 
-    def do_help(self, a): print(help_text())
+    def do_help(self, a):
+        cmd = ALIASES.get(a[0].lower(), a[0].lower()) if a else None
+        if cmd in COMMAND_HELP:
+            command_help(cmd)
+        elif cmd:
+            warn(f"no command {a[0]!r}")
+            note(dim("  run help for the list"))
+        else:
+            print(help_text())
 
     def do_status(self, a):
         print(servers_json()) if "--json" in a else status()
@@ -2198,7 +2222,8 @@ class Ctl:
             return
         key = a[0]
         if key not in SETTINGS:
-            warn(f"unknown setting {key!r}, run config to list them")
+            warn(f"unknown setting {key!r}")
+            note(dim("  run config to list them"))
             return
         if len(a) == 1:
             value, src = setting_with_source(key)
@@ -2311,6 +2336,87 @@ class Ctl:
         run_ask(text, imgs, replace=replace)
 
 
+# usage, one line about it, examples
+COMMAND_HELP = {
+    "lm": ("lm [model] [--port N] [--host ADDR] [--new] [--replace] "
+           "[--foreground] [-y]",
+           "Serve a model text-only with mlx_lm.",
+           ["mlxsh lm", "mlxsh lm qwen3.6", "mlxsh lm 3 --new"]),
+    "vision": ("vision [model] [--port N] [--host ADDR] [--new] [--replace] "
+               "[--foreground] [-y]",
+               "Serve a model with images and video, using mlx_vlm.",
+               ["mlxsh vision", "mlxsh vision gemma-4-31b --new"]),
+    "serve": ("serve lm|vision [model] [flags]",
+              "The same as lm and vision, spelled out.",
+              ["mlxsh serve vision gemma-4-31b"]),
+    "stop": ("stop [port|model|mode|all]",
+             "Stop a server and free its memory. With several running, name "
+             "one.",
+             ["mlxsh stop", "mlxsh stop 41278", "mlxsh stop gemma",
+              "mlxsh stop all"]),
+    "status": ("status [--json]",
+               "Every server running, with memory, uptime and endpoint.",
+               ["mlxsh status", "mlxsh status --json"]),
+    "bench": ("bench [port|model] [tokens]",
+              "Measure tok/s of a running server, saved to the registry.",
+              ["mlxsh bench", "mlxsh bench gemma 256"]),
+    "log": ("log [port|model] [lines]",
+            "Tail one server's log.",
+            ["mlxsh log", "mlxsh log 41278 100"]),
+    "ls": ("ls [--json]",
+           "Models this machine knows about, with sizes and measured speeds.",
+           ["mlxsh ls", "mlxsh ls --json"]),
+    "models": ("models",
+               "Pick a model, then pick what to do with it. Needs a terminal.",
+               ["mlxsh models"]),
+    "use": ("use [model] [lm|vision]",
+            "Set the default model for a mode.",
+            ["mlxsh use qwen3.6 lm", "mlxsh use 2 vision"]),
+    "rm": ("rm [model] [-y]",
+           "Delete a model from disk. Asks first unless you pass -y.",
+           ["mlxsh rm qwen3-0.6b", "mlxsh rm 5 -y"]),
+    "browse": ("browse [filters and search terms]",
+               "A live list from hugging face. Filters: vision, text, "
+               "trending, popular, new, all. An org/ scopes the search.",
+               ["mlxsh browse", "mlxsh browse vision new",
+                "mlxsh browse qwen3.6"]),
+    "get": ("get [row|repo] [-y]",
+            "Download a model, by row from the last browse or by repo id.",
+            ["mlxsh get 3", "mlxsh get mlx-community/Qwen3.6-27B-4bit -y"]),
+    "ask": ("ask <text> [--on port|model] [--image PATH] [--load]",
+            "One prompt. Uses a running model, or loads one if none is up.",
+            ['mlxsh ask "explain unified memory"',
+             'mlxsh ask --on gemma --image shot.png "what is this"']),
+    "chat": ("chat [--on port|model] [--load]",
+             "A chat loop against a running model.",
+             ["mlxsh chat", "mlxsh chat --on qwen3.6"]),
+    "config": ("config [key] [value] | config reset <key>",
+               "Show settings and where each value comes from, or change one.",
+               ["mlxsh config", "mlxsh config port 8080",
+                "mlxsh config reset port"]),
+    "setup": ("setup [-y]",
+              "Install mlx-lm, mlx-vlm and huggingface_hub where mlxsh runs.",
+              ["mlxsh setup"]),
+    "doctor": ("doctor", "Versions, paths, memory and endpoint.",
+               ["mlxsh doctor"]),
+    "edit": ("edit", "Open the registry in $EDITOR.", ["mlxsh edit"]),
+    "shell": ("shell", "The command list, then the interactive shell.",
+              ["mlxsh shell"]),
+}
+
+
+def command_help(cmd: str):
+    usage, what, examples = COMMAND_HELP[cmd]
+    print()
+    print("  " + bold(usage))
+    print("  " + what)
+    if examples:
+        print()
+        for e in examples:
+            print(dim("    " + e))
+    print()
+
+
 ALIASES = {
     "?": "help", "h": "help", "--help": "help", "-h": "help",
     "st": "status", "s": "status", "vl": "vision", "v": "vision",
@@ -2336,12 +2442,23 @@ def dispatch(ctl: Ctl, line: str, interactive: bool) -> bool:
         parts = line.split()
     if not parts:
         return True
+    if parts[0] == "mlxsh" and len(parts) > 1:
+        parts = parts[1:]   # habit: people type the program name in the shell
     cmd, args = parts[0].lower(), parts[1:]
     cmd = ALIASES.get(cmd, cmd)
+    # -h anywhere means "explain yourself", never "do something"
+    if any(a in ("-h", "--help") for a in args):
+        if cmd in COMMAND_HELP:
+            command_help(cmd)
+        else:
+            print(help_text())
+        return True
     if cmd == "exit":
         return False
     if cmd == "shell":
-        if not interactive:
+        if interactive:
+            note(dim("  already in the shell"))
+        else:
             shell()
         return True
     if cmd in ("chat", "ask"):
@@ -2349,7 +2466,9 @@ def dispatch(ctl: Ctl, line: str, interactive: bool) -> bool:
         return True
     fn = getattr(ctl, "do_" + cmd, None)
     if fn is None:
-        warn(f"unknown command {parts[0]!r}, run help")
+        warn(f"unknown command {parts[0]!r}")
+        near = difflib.get_close_matches(cmd, COMMANDS + list(ALIASES), 1, 0.6)
+        note(dim(f"  did you mean {near[0]}?" if near else "  run help"))
         return True
     fn(args)
     return True
@@ -2627,11 +2746,15 @@ def setup(yes: bool = False):
     print(dim(f"  using {'uv' if uv else sys.executable}, a few hundred MB"))
     if not yes and not confirm("  go ahead?", True):
         return
+    had_engines = have_module("mlx_lm")
     for cmd in setup_commands(venv, uv, into):
         if subprocess.run(cmd).returncode != 0:
             warn(f"failed: {' '.join(cmd)}")
             return
     print(green("  done"))
+    if not had_engines:
+        # this process is still running the interpreter that lacked them
+        print(dim("  start mlxsh again to use it"))
     print(dim("  check it with: mlxsh doctor, then: mlxsh browse"))
 
 
@@ -2664,6 +2787,8 @@ def main(argv: list[str]):
         ensure_interpreter()
         print(help_text())
         check_deps()
+        if not load_registry()["models"]:
+            print(dim("  no models yet. Run: mlxsh browse\n"))
         return
     if argv[0].lower() not in NO_REEXEC:
         ensure_interpreter()
