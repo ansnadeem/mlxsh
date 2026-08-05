@@ -9,6 +9,8 @@ once, switches a model between text-only and multimodal, and browses and
 downloads from the Hugging Face Hub. One file, standard library only; it drives
 `mlx-lm` and `mlx-vlm`.
 
+![a model served locally, then reached over the internet](demo.gif)
+
 ```
 mlxsh> lm gemma-4-26B             serve it at http://127.0.0.1:41277/v1
 mlxsh> lm qwen3.6                 a second model, the first keeps running

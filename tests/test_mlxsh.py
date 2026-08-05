@@ -186,6 +186,45 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(mlxsh.resolve(self.reg, ""))
 
 
+class FindModelOnAFreshRegistry(TempHome):
+    """A new install knows nothing until something scans the cache, but a name
+    that matches something already downloaded should still work."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = tempfile.TemporaryDirectory()
+        os.environ["HF_HUB_CACHE"] = self.cache.name
+        snap = (Path(self.cache.name) / "models--acme--gemma-4-26B"
+                / "snapshots" / "abc")
+        snap.mkdir(parents=True)
+        (snap / "model.safetensors").write_text("weights")
+        (snap / "config.json").write_text(json.dumps(
+            {"model_type": "gemma4", "quantization": {"bits": 4}}))
+
+        # scan_cache_dir is strict about the layout it walks, so stand in for
+        # it: the rest of the path, is_downloaded and local_config, reads the
+        # directory above directly
+        self._sizes = mlxsh.cache_sizes
+        mlxsh.cache_sizes = lambda: {"acme/gemma-4-26B": 15_000_000_000}
+
+    def tearDown(self):
+        mlxsh.cache_sizes = self._sizes
+        os.environ.pop("HF_HUB_CACHE", None)
+        self.cache.cleanup()
+        super().tearDown()
+
+    def test_resolve_alone_finds_nothing(self):
+        self.assertIsNone(mlxsh.resolve(mlxsh.load_registry(), "gemma"))
+
+    def test_find_model_scans_the_cache(self):
+        entry = mlxsh.find_model(mlxsh.load_registry(), "gemma")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["repo"], "acme/gemma-4-26B")
+
+    def test_a_repo_id_is_left_alone(self):
+        self.assertIsNone(mlxsh.find_model(mlxsh.load_registry(), "who/knows"))
+
+
 class BrowseArgs(unittest.TestCase):
     def test_defaults_to_trending(self):
         self.assertEqual(mlxsh.parse_browse_args([]),

@@ -619,6 +619,18 @@ def set_missing_defaults(reg: dict) -> dict:
     return reg
 
 
+def find_model(reg: dict, needle: str) -> dict | None:
+    """resolve(), but scan the cache before giving up.
+
+    A fresh registry knows nothing, so a name that matches a model already in
+    the Hugging Face cache would otherwise be treated as a repo to download.
+    """
+    entry = resolve(reg, needle)
+    if entry or "/" in needle:
+        return entry
+    return resolve(adopt_cached_models(load_registry(refresh=True)), needle)
+
+
 def resolve(reg: dict, needle: str) -> dict | None:
     """Find a model by index, repo id, or unique substring."""
     needle = (needle or "").strip()
@@ -1214,7 +1226,7 @@ def serve(mode: str, repo: str | None = None, extra: list[str] | None = None,
     reg = load_registry()
     host = setting("host")
     if repo:
-        entry = resolve(reg, repo)
+        entry = find_model(reg, repo)
         repo = entry["repo"] if entry else repo
     else:
         repo = reg["defaults"].get(mode)
@@ -1851,7 +1863,7 @@ def extract_on(args: list[str]) -> tuple[list[str], str | None, bool]:
 def run_chat(mode: str, repo: str | None = None, replace: bool = True):
     reg = load_registry()
     if repo:
-        e = resolve(reg, repo)
+        e = find_model(reg, repo)
         repo = e["repo"] if e else repo
     else:
         repo = reg["defaults"].get(mode)
@@ -2448,6 +2460,7 @@ def help_text() -> str:
     tunnel                   start the tunnel, and the gateway if needed
     tunnel --quick           a throwaway address, no account or domain, but
                              no streaming and a new name each time
+    tunnel url               print the public address, for scripts
     gateway stop, tunnel stop
 
   {bold('the shell')}
@@ -2581,7 +2594,7 @@ class Ctl:
         if a and a[0] in ("stop", "off"):
             return stop_gateway()
         if a and a[0] == "key":
-            print("  " + api_key(new="--new" in a))
+            print(api_key(new="--new" in a))
             return
         start_gateway(OVERRIDES.get("host"), OVERRIDES.get("port"),
                       foreground="--foreground" in a,
@@ -2591,6 +2604,13 @@ class Ctl:
         a = split_flags(a)
         if a and a[0] in ("stop", "off"):
             return stop_tunnel()
+        if a and a[0] == "url":
+            st = tunnel_state()
+            if not st:
+                warn("no tunnel running")
+                return
+            print(st.get("url") or f"https://{st['hostname']}")
+            return
         if a and a[0] == "setup":
             return tunnel_setup(a[1] if len(a) > 1
                                 else setting("tunnel_hostname"))
@@ -2947,14 +2967,15 @@ COMMAND_HELP = {
                 "machine only. Reaching it from anywhere else needs\n"
                 "cloudflared and mlxsh tunnel.",
                 ["mlxsh gateway", "mlxsh gateway key", "mlxsh gateway stop"]),
-    "tunnel": ("tunnel [setup <hostname>] [--quick] [stop]",
+    "tunnel": ("tunnel [setup <hostname>] [--quick] [url] [stop]",
                "A public address for the gateway, through cloudflared, which\n"
                "must be installed. setup routes a hostname you own and keeps\n"
                "it; --quick borrows a throwaway one with no account, but it\n"
                "changes on every restart.\n"
                f"  {CLOUDFLARED_DOCS}",
                ["mlxsh tunnel setup llm.example.com", "mlxsh tunnel",
-                "mlxsh tunnel --quick", "mlxsh tunnel stop"]),
+                "mlxsh tunnel --quick", "mlxsh tunnel url",
+                "mlxsh tunnel stop"]),
     "setup": ("setup [-y]",
               "Install mlx-lm, mlx-vlm and huggingface_hub where mlxsh runs.",
               ["mlxsh setup"]),
