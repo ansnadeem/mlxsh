@@ -1371,11 +1371,12 @@ def servers_json() -> str:
     for st in servers:
         rss, up = stats.get(st["pid"], (0, "?"))
         host = st.get("host", setting("host"))
+        # mlx_lm maps this alias to whatever the server was started with, so
+        # a client can pin to a port without naming a repo id. mlx_vlm has no
+        # such alias and rejects it.
+        alias = "default_model" if st.get("engine") == "mlx_lm" else None
         rows.append({"model": st.get("model") or "", "mode": st["mode"],
-                     # mlx_lm maps this alias to whatever the server was
-                     # started with, so a client can pin to this port without
-                     # naming a repo id
-                     "alias": "default_model",
+                     "alias": alias,
                      "engine": st.get("engine", ""), "host": host,
                      "port": st["port"], "pid": st["pid"],
                      "endpoint": f"http://{host}:{st['port']}/v1",

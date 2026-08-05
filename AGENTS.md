@@ -141,9 +141,13 @@ Any OpenAI-compatible client works.
 
 ### Which model to send
 
-**Send `"model": "default_model"`.** mlx_lm maps that alias to whatever the
-server on that port was started with, so a client pinned to a port always gets
-that model and never has to know a repo id.
+**Send the exact repo id from `mlxsh status --json`.** It works against both
+engines.
+
+On a `lm` server you can also send `"model": "default_model"`, an alias mlx_lm
+maps to whatever that port was started with, so a client needs no repo id.
+`mlx_vlm` has no such alias and answers `400`, so only use it when
+`status --json` reports one for that server.
 
 ```sh
 curl -s http://127.0.0.1:41277/v1/chat/completions \

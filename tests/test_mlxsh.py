@@ -934,6 +934,35 @@ class CacheView(TempHome):
         self.assertFalse(mlxsh.setting("pin_model"))
 
 
+class ModelAlias(TempHome):
+    """default_model is an mlx_lm feature; mlx_vlm answers 400 to it."""
+
+    def setUp(self):
+        super().setUp()
+        self._fns = (mlxsh.pid_alive, mlxsh.pid_command, mlxsh.proc_stats_many,
+                     mlxsh.port_owner)
+        mlxsh.pid_alive = lambda pid: True
+        mlxsh.pid_command = lambda pid: "python -m mlx_lm server --model a/b"
+        mlxsh.proc_stats_many = lambda pids: dict.fromkeys(pids, (1, "00:01"))
+        mlxsh.port_owner = lambda port: None
+
+    def tearDown(self):
+        (mlxsh.pid_alive, mlxsh.pid_command, mlxsh.proc_stats_many,
+         mlxsh.port_owner) = self._fns
+        super().tearDown()
+
+    def test_offered_for_lm_servers(self):
+        mlxsh.write_state({"pid": 1, "mode": "lm", "model": "a/b",
+                           "port": 41277, "engine": "mlx_lm"})
+        self.assertEqual(json.loads(mlxsh.servers_json())[0]["alias"],
+                         "default_model")
+
+    def test_not_offered_for_vision_servers(self):
+        mlxsh.write_state({"pid": 1, "mode": "vision", "model": "a/b",
+                           "port": 41277, "engine": "mlx_vlm"})
+        self.assertIsNone(json.loads(mlxsh.servers_json())[0]["alias"])
+
+
 class HelpAndStreams(TempHome):
     """Conventions a command line is expected to follow."""
 
