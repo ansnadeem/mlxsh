@@ -1096,6 +1096,11 @@ class TunnelCommands(TempHome):
                          ["tailscale", "funnel", "--bg", "--https=443",
                           "localhost:41377"])
 
+    def test_the_help_says_what_it_depends_on(self):
+        for cmd in ("gateway", "tunnel"):
+            _usage, what, _examples = mlxsh.COMMAND_HELP[cmd]
+            self.assertIn("cloudflared", what, cmd)
+
     def test_the_hint_names_the_missing_piece(self):
         saved = mlxsh.cloudflared
         try:

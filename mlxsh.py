@@ -2433,6 +2433,8 @@ def help_text() -> str:
     setup                    install the MLX packages where mlxsh runs
 
   {bold('reaching it from elsewhere')}
+    needs cloudflared: brew install cloudflared
+
     gateway                  one authenticated endpoint in front of every
                              loaded model. Prints the bearer key
     gateway key [--new]      show or rotate the key
@@ -2934,12 +2936,16 @@ COMMAND_HELP = {
                ["mlxsh config", "mlxsh config port 8080",
                 "mlxsh config reset port"]),
     "gateway": ("gateway [stop] [key [--new]] [--port N] [--host ADDR] [--expose]",
-                "An authenticated endpoint in front of every loaded model: one "
-                "URL, a bearer key, routed by model name.",
+                "An authenticated endpoint in front of every loaded model: one\n"
+                "URL, a bearer key, routed by model name. It listens on this\n"
+                "machine only. Reaching it from anywhere else needs cloudflared\n"
+                "(brew install cloudflared) and mlxsh tunnel.",
                 ["mlxsh gateway", "mlxsh gateway key", "mlxsh gateway stop"]),
     "tunnel": ("tunnel [setup <hostname>] [--quick] [stop]",
-               "A permanent public address for the gateway, through a named "
-               "cloudflared tunnel.",
+               "A public address for the gateway, through cloudflared, which\n"
+               "must be installed (brew install cloudflared). setup routes a\n"
+               "hostname you own and keeps it; --quick borrows a throwaway one\n"
+               "with no account, but changes on every restart.",
                ["mlxsh tunnel setup llm.example.com", "mlxsh tunnel",
                 "mlxsh tunnel --quick", "mlxsh tunnel stop"]),
     "setup": ("setup [-y]",
@@ -2957,7 +2963,8 @@ def command_help(cmd: str):
     usage, what, examples = COMMAND_HELP[cmd]
     print()
     print("  " + bold(usage))
-    print("  " + what)
+    for line in what.split("\n"):
+        print("  " + line)
     if examples:
         print()
         for e in examples:
