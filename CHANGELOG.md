@@ -8,6 +8,9 @@
   port holding it, with the upstream always receiving its own repo id.
   Streaming is passed through chunk by chunk. Binds localhost unless told
   otherwise.
+- Guidance on installing cloudflared links Cloudflare's downloads page rather
+  than assuming Homebrew, and `gateway -h` says the gateway alone listens on
+  this machine only.
 - `mlxsh tunnel --quick` for a throwaway address with no account, domain or
   configuration, reading the assigned name out of cloudflared's own output.
   `setup` and `gateway` both mention cloudflared when it is missing, and offer
