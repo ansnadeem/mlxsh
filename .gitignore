@@ -9,6 +9,8 @@ dist/
 build/
 *.egg-info/
 
+demo.ascii
+
 # tool caches
 .ruff_cache/
 

@@ -186,6 +186,45 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(mlxsh.resolve(self.reg, ""))
 
 
+class FindModelOnAFreshRegistry(TempHome):
+    """A new install knows nothing until something scans the cache, but a name
+    that matches something already downloaded should still work."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = tempfile.TemporaryDirectory()
+        os.environ["HF_HUB_CACHE"] = self.cache.name
+        snap = (Path(self.cache.name) / "models--acme--gemma-4-26B"
+                / "snapshots" / "abc")
+        snap.mkdir(parents=True)
+        (snap / "model.safetensors").write_text("weights")
+        (snap / "config.json").write_text(json.dumps(
+            {"model_type": "gemma4", "quantization": {"bits": 4}}))
+
+        # scan_cache_dir is strict about the layout it walks, so stand in for
+        # it: the rest of the path, is_downloaded and local_config, reads the
+        # directory above directly
+        self._sizes = mlxsh.cache_sizes
+        mlxsh.cache_sizes = lambda: {"acme/gemma-4-26B": 15_000_000_000}
+
+    def tearDown(self):
+        mlxsh.cache_sizes = self._sizes
+        os.environ.pop("HF_HUB_CACHE", None)
+        self.cache.cleanup()
+        super().tearDown()
+
+    def test_resolve_alone_finds_nothing(self):
+        self.assertIsNone(mlxsh.resolve(mlxsh.load_registry(), "gemma"))
+
+    def test_find_model_scans_the_cache(self):
+        entry = mlxsh.find_model(mlxsh.load_registry(), "gemma")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["repo"], "acme/gemma-4-26B")
+
+    def test_a_repo_id_is_left_alone(self):
+        self.assertIsNone(mlxsh.find_model(mlxsh.load_registry(), "who/knows"))
+
+
 class BrowseArgs(unittest.TestCase):
     def test_defaults_to_trending(self):
         self.assertEqual(mlxsh.parse_browse_args([]),
@@ -820,14 +859,14 @@ class ExitCodes(TempHome):
 
     def test_warning_marks_the_run_as_failed(self):
         mlxsh.FAILED.clear()
-        with contextlib.redirect_stdout(io.StringIO()):
+        with captured():
             mlxsh.warn("something went wrong")
         self.assertTrue(mlxsh.FAILED)
 
     def test_dispatch_starts_each_command_clean(self):
         ctl = mlxsh.Ctl(tui=False)
         mlxsh.FAILED.append("stale")
-        with contextlib.redirect_stdout(io.StringIO()):
+        with captured():
             mlxsh.dispatch(ctl, "status", interactive=True)
         self.assertEqual(mlxsh.FAILED, [])
 
@@ -963,6 +1002,352 @@ class ModelAlias(TempHome):
         self.assertIsNone(json.loads(mlxsh.servers_json())[0]["alias"])
 
 
+class GatewayKey(TempHome):
+    def test_created_once_and_reused(self):
+        first = mlxsh.api_key()
+        self.assertTrue(first.startswith("mlxsh-"))
+        self.assertEqual(mlxsh.api_key(), first)
+        self.assertEqual(oct(mlxsh.key_path().stat().st_mode)[-3:], "600")
+
+    def test_rotating_replaces_it(self):
+        first = mlxsh.api_key()
+        self.assertNotEqual(mlxsh.api_key(new=True), first)
+
+    def test_environment_wins(self):
+        mlxsh.api_key()
+        os.environ["MLXSH_API_KEY"] = "mlxsh-from-the-environment"
+        self.assertEqual(mlxsh.api_key(), "mlxsh-from-the-environment")
+
+    def test_header_matching(self):
+        key = mlxsh.api_key()
+        self.assertTrue(mlxsh.key_matches(f"Bearer {key}"))
+        self.assertTrue(mlxsh.key_matches(f"bearer {key}"))
+        for wrong in ("", "Bearer ", "Bearer wrong", key, f"Basic {key}",
+                      f"Bearer {key}x"):
+            self.assertFalse(mlxsh.key_matches(wrong), wrong)
+
+
+class GatewayRouting(TempHome):
+    """One endpoint in front of several ports, chosen by model name."""
+
+    def setUp(self):
+        super().setUp()
+        self._fns = (mlxsh.pid_alive, mlxsh.pid_command, mlxsh.port_owner)
+        mlxsh.pid_alive = lambda pid: True
+        mlxsh.pid_command = lambda pid: "python -m mlx_lm server --model a/b"
+        mlxsh.port_owner = lambda port: None
+        for port, model, mode in ((41277, "org/gemma-4-26B", "lm"),
+                                  (41278, "org/qwen3.6", "vision")):
+            mlxsh.write_state({"pid": 1000 + port, "mode": mode, "model": model,
+                               "port": port, "host": "127.0.0.1",
+                               "engine": "mlx_lm", "started": 1})
+
+    def tearDown(self):
+        mlxsh.pid_alive, mlxsh.pid_command, mlxsh.port_owner = self._fns
+        super().tearDown()
+
+    def target(self, model):
+        body = json.dumps({"model": model, "messages": []}).encode()
+        server, rewritten = mlxsh.gateway_target(body)
+        return server, json.loads(rewritten)
+
+    def test_exact_repo_id(self):
+        server, body = self.target("org/qwen3.6")
+        self.assertEqual(server["port"], 41278)
+        self.assertEqual(body["model"], "org/qwen3.6")
+
+    def test_substring(self):
+        server, _ = self.target("gemma")
+        self.assertEqual(server["port"], 41277)
+
+    def test_mode(self):
+        server, _ = self.target("vision")
+        self.assertEqual(server["port"], 41278)
+
+    def test_alias_and_empty_take_the_first(self):
+        for name in ("default_model", ""):
+            server, _ = self.target(name)
+            self.assertEqual(server["port"], 41277, name)
+
+    def test_the_upstream_always_gets_its_own_repo_id(self):
+        _, body = self.target("vision")
+        self.assertEqual(body["model"], "org/qwen3.6")
+
+    def test_unknown_model_has_no_target(self):
+        server, _ = self.target("something/else")
+        self.assertIsNone(server)
+
+    def test_nothing_loaded(self):
+        for port in (41277, 41278):
+            mlxsh.state_path(port).unlink()
+        server, _ = mlxsh.gateway_target(b'{"model": "anything"}')
+        self.assertIsNone(server)
+
+    def test_malformed_body_with_one_server(self):
+        mlxsh.state_path(41278).unlink()
+        server, _ = mlxsh.gateway_target(b"not json at all")
+        self.assertEqual(server["port"], 41277)
+
+    def test_models_listing_covers_every_loaded_model(self):
+        listing = mlxsh.gateway_models()
+        self.assertEqual([m["id"] for m in listing["data"]],
+                         ["org/gemma-4-26B", "org/qwen3.6"])
+
+    def test_refuses_a_public_bind_without_expose(self):
+        with captured() as (_out, err):
+            mlxsh.start_gateway(host="0.0.0.0")
+        self.assertIn("would put the endpoint on your network", err.getvalue())
+        self.assertIsNone(mlxsh.gateway_state())
+
+
+class TunnelCommands(TempHome):
+    """Setting up a named tunnel is a sequence of cloudflared calls."""
+
+    def test_full_sequence_when_nothing_exists(self):
+        steps = mlxsh.tunnel_commands("mlxsh", "llm.example.com", 41377,
+                                      logged_in=False, exists=False)
+        self.assertEqual([s[1:3] for s in steps],
+                         [["tunnel", "login"], ["tunnel", "create"],
+                          ["tunnel", "route"]])
+
+    def test_login_skipped_when_already_logged_in(self):
+        steps = mlxsh.tunnel_commands("mlxsh", "llm.example.com", 41377,
+                                      logged_in=True, exists=False)
+        self.assertNotIn("login", [s[2] for s in steps])
+
+    def test_create_skipped_when_the_tunnel_exists(self):
+        steps = mlxsh.tunnel_commands("mlxsh", "llm.example.com", 41377,
+                                      logged_in=True, exists=True)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0][1:4], ["tunnel", "route", "dns"])
+        self.assertIn("llm.example.com", steps[0])
+
+    def test_run_points_at_the_gateway(self):
+        cmd = mlxsh.tunnel_run_command("mlxsh", 41377)
+        self.assertIn("http://127.0.0.1:41377", cmd)
+        self.assertEqual(cmd[1:3], ["tunnel", "run"])
+
+    def test_a_custom_command_replaces_cloudflared(self):
+        reg = mlxsh.load_registry()
+        reg["tunnel_cmd"] = "tailscale funnel --bg --https=443 localhost:{port}"
+        mlxsh.save_registry(reg)
+        self.assertEqual(mlxsh.tunnel_run_command("mlxsh", 41377),
+                         ["tailscale", "funnel", "--bg", "--https=443",
+                          "localhost:41377"])
+
+    def test_the_help_says_what_it_depends_on(self):
+        for cmd in ("gateway", "tunnel"):
+            _usage, what, _examples = mlxsh.COMMAND_HELP[cmd]
+            self.assertIn("cloudflared", what, cmd)
+            self.assertNotIn("brew", what, cmd)
+        self.assertIn(mlxsh.CLOUDFLARED_DOCS, mlxsh.COMMAND_HELP["tunnel"][1])
+
+    def test_the_hint_names_the_missing_piece(self):
+        saved = mlxsh.cloudflared
+        try:
+            mlxsh.cloudflared = lambda: None
+            missing = " ".join(mlxsh.tunnel_hint())
+            self.assertIn("cloudflared", missing)
+            self.assertIn(mlxsh.CLOUDFLARED_DOCS, missing)
+            self.assertNotIn("brew", missing)   # not everyone has homebrew
+            mlxsh.cloudflared = lambda: "/opt/homebrew/bin/cloudflared"
+            present = " ".join(mlxsh.tunnel_hint())
+            self.assertIn("tunnel --quick", present)
+            self.assertNotIn(mlxsh.CLOUDFLARED_DOCS, present)
+        finally:
+            mlxsh.cloudflared = saved
+
+    def test_quick_needs_no_hostname_or_account(self):
+        cmd = mlxsh.tunnel_run_command("mlxsh", 41377, quick=True)
+        self.assertEqual(cmd[1:], ["tunnel", "--url", "http://127.0.0.1:41377"])
+        self.assertNotIn("run", cmd)
+
+    def test_the_address_is_read_out_of_the_log(self):
+        log = ("2026-08-04 INF Thank you for trying Cloudflare Tunnel.\n"
+               "2026-08-04 INF |  https://loud-quiet-mango-tree.trycloudflare.com"
+               "  |\n2026-08-04 INF Registered tunnel connection\n")
+        self.assertEqual(mlxsh.url_from_log(log),
+                         "https://loud-quiet-mango-tree.trycloudflare.com")
+
+    def test_a_tailscale_address_is_read_too(self):
+        self.assertEqual(
+            mlxsh.url_from_log("Available within your tailnet:\n"
+                               "https://ans-mac.tail1234.ts.net/\n"),
+            "https://ans-mac.tail1234.ts.net/")
+
+    def test_no_address_in_the_log(self):
+        self.assertIsNone(mlxsh.url_from_log("starting up\nconnected\n"))
+
+    def test_an_earlier_run_in_the_log_is_not_read_as_this_one(self):
+        log = mlxsh.log_path("tunnel")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("=== earlier run ===\n"
+                       "INF |  https://gone-old-dead-name.trycloudflare.com  |\n")
+        with log.open("a") as fh:
+            fh.write("=== this run ===\n")
+            fh.flush()
+            start_at = fh.tell()
+            fh.write("INF |  https://fresh-new-live-name.trycloudflare.com  |\n")
+        self.assertEqual(mlxsh.url_from_log(mlxsh.log_since(log, start_at)),
+                         "https://fresh-new-live-name.trycloudflare.com")
+        self.assertIsNone(
+            mlxsh.url_from_log(mlxsh.log_since(log, log.stat().st_size)))
+
+    def test_starting_without_a_hostname_explains_itself(self):
+        with captured() as (_out, err):
+            mlxsh.start_tunnel()
+        self.assertIn("no hostname yet", err.getvalue())
+
+    def test_setup_needs_cloudflared(self):
+        saved = mlxsh.cloudflared
+        mlxsh.cloudflared = lambda: None
+        try:
+            with captured() as (_out, err):
+                mlxsh.tunnel_setup("llm.example.com")
+        finally:
+            mlxsh.cloudflared = saved
+        self.assertIn("cloudflared is not installed", err.getvalue())
+
+    def test_setup_rejects_something_that_is_not_a_hostname(self):
+        saved = mlxsh.cloudflared
+        mlxsh.cloudflared = lambda: "/usr/local/bin/cloudflared"
+        try:
+            with captured() as (_out, err):
+                mlxsh.tunnel_setup("notahostname")
+        finally:
+            mlxsh.cloudflared = saved
+        self.assertIn("give the hostname", err.getvalue())
+
+
+class GatewayOverHttp(TempHome):
+    """The whole path: a real request through the gateway to a fake upstream."""
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.seen = []
+        seen = self.seen
+
+        class Upstream(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                seen.append(json.loads(body))
+                if json.loads(body).get("stream"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for word in ("one ", "two ", "three"):
+                        piece = ("data: " + json.dumps(
+                            {"choices": [{"delta": {"content": word}}]}) + "\n\n")
+                        chunk = piece.encode()
+                        self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                        self.wfile.flush()
+                    done = b"data: [DONE]\n\n"
+                    self.wfile.write(b"%x\r\n%s\r\n0\r\n\r\n" % (len(done), done))
+                    return
+                payload = json.dumps({"choices": [{"message":
+                                     {"content": "hello"}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        self.upstream.daemon_threads = True
+        threading.Thread(target=self.upstream.serve_forever, daemon=True).start()
+
+        self._fns = (mlxsh.pid_alive, mlxsh.pid_command, mlxsh.port_owner)
+        mlxsh.pid_alive = lambda pid: True
+        mlxsh.pid_command = lambda pid: "python -m mlx_lm server --model a/b"
+        mlxsh.port_owner = lambda port: None
+        mlxsh.write_state({"pid": 999, "mode": "lm", "model": "org/the-model",
+                           "port": self.upstream.server_address[1],
+                           "host": "127.0.0.1", "engine": "mlx_lm",
+                           "started": 1})
+
+        self.gateway = ThreadingHTTPServer(("127.0.0.1", 0),
+                                           mlxsh.gateway_handler())
+        self.gateway.daemon_threads = True
+        threading.Thread(target=self.gateway.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.gateway.server_address[1]}"
+        self.key = mlxsh.api_key()
+
+    def tearDown(self):
+        self.gateway.shutdown()
+        self.upstream.shutdown()
+        mlxsh.pid_alive, mlxsh.pid_command, mlxsh.port_owner = self._fns
+        super().tearDown()
+
+    def call(self, path, key=None, payload=None, stream=False):
+        import urllib.error
+        import urllib.request
+        data = json.dumps(payload).encode() if payload is not None else None
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        req = urllib.request.Request(self.base + path, data=data,
+                                     headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                # read inside the block: the response closes on exit
+                return r.status, (list(r) if stream else r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def test_no_key_is_refused(self):
+        code, body = self.call("/v1/models")
+        self.assertEqual(code, 401)
+        self.assertIn("api key", json.loads(body)["error"]["message"])
+
+    def test_wrong_key_is_refused(self):
+        self.assertEqual(self.call("/v1/models", "mlxsh-nope")[0], 401)
+
+    def test_health_needs_no_key(self):
+        code, body = self.call("/healthz")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["status"], "ok")
+
+    def test_models_with_a_key(self):
+        code, body = self.call("/v1/models", self.key)
+        self.assertEqual(code, 200)
+        self.assertEqual([m["id"] for m in json.loads(body)["data"]],
+                         ["org/the-model"])
+
+    def test_a_request_reaches_the_upstream(self):
+        code, body = self.call("/v1/chat/completions", self.key,
+                               {"model": "the-model", "messages": []})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["choices"][0]["message"]["content"],
+                         "hello")
+        self.assertEqual(self.seen[-1]["model"], "org/the-model")
+
+    def test_an_unknown_model_is_not_forwarded(self):
+        code, body = self.call("/v1/chat/completions", self.key,
+                               {"model": "not/loaded", "messages": []})
+        self.assertEqual(code, 404)
+        self.assertIn("no loaded model matches",
+                      json.loads(body)["error"]["message"])
+        self.assertEqual(self.seen, [])
+
+    def test_streaming_is_passed_through_in_pieces(self):
+        code, lines = self.call("/v1/chat/completions", self.key,
+                                {"model": "the-model", "messages": [],
+                                 "stream": True}, stream=True)
+        self.assertEqual(code, 200)
+        chunks = [line for line in lines if line.startswith(b"data: ")]
+        self.assertEqual(len(chunks), 4)  # three words and [DONE]
+        self.assertIn(b"three", chunks[2])
+
+
 class HelpAndStreams(TempHome):
     """Conventions a command line is expected to follow."""
 
@@ -1000,7 +1385,8 @@ class HelpAndStreams(TempHome):
             self.assertIn(cmd, mlxsh.COMMAND_HELP, cmd)
             usage, what, examples = mlxsh.COMMAND_HELP[cmd]
             self.assertTrue(usage.startswith(cmd), cmd)
-            self.assertTrue(what.endswith("."), cmd)
+            # a full stop, or a link on the last line
+            self.assertTrue(what.endswith((".", "/")), cmd)
             self.assertTrue(all(e.startswith("mlxsh ") for e in examples), cmd)
 
     def test_diagnostics_go_to_stderr(self):

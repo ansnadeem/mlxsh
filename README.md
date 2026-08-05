@@ -9,6 +9,8 @@ once, switches a model between text-only and multimodal, and browses and
 downloads from the Hugging Face Hub. One file, standard library only; it drives
 `mlx-lm` and `mlx-vlm`.
 
+![a model served locally, then reached over the internet](demo.gif)
+
 ```
 mlxsh> lm gemma-4-26B             serve it at http://127.0.0.1:41277/v1
 mlxsh> lm qwen3.6                 a second model, the first keeps running
@@ -62,6 +64,20 @@ mode: `stop 41278`, `bench gemma`, `ask --on vision "..."`, `stop all`. Leave
 the argument off in the shell and you get a picker. `--new` forces a new port,
 `--replace` reuses the configured one, and `config when_busy` sets the default.
 
+There are two ways to put several models behind a single URL, and they trade
+memory against latency:
+
+| | a gateway in front of several servers | one server, `pin_model off` |
+|---|---|---|
+| the client | one URL, models by id | one URL, models by id |
+| resident | all of them | one |
+| switching | free, they are all warm | a full reload, seconds to a minute |
+| memory | the sum of them | one model |
+
+The second uses mlx_lm's own behaviour, where the model named in a request is
+loaded in place of the current one. Measured here at 2.7 seconds to swap a
+12.6 GB model with a warm page cache.
+
 Before adding a model mlxsh adds up the weights already loaded and asks if the
 new one will not fit. `-y` skips the question.
 
@@ -91,6 +107,75 @@ stops a stray request from swapping the model out or downloading another one.
 The servers have no authentication and bind to `127.0.0.1`;
 `config host 0.0.0.0` exposes them to your network.
 
+## Reaching it from elsewhere
+
+The model servers have no authentication, which is why they only listen on
+`127.0.0.1`. To use them from another machine, put the gateway in front: one
+endpoint, a bearer key, routed to whichever loaded model the request names.
+
+```
+your app  ->  cloudflare edge  ->  cloudflared  ->  gateway  ->  model servers
+              TLS, your            started by      the key,     127.0.0.1:41277
+              hostname             mlxsh           routing      127.0.0.1:41278
+```
+
+```sh
+mlxsh gateway                        prints the URL and the key
+mlxsh tunnel --quick                 a throwaway public address, right away
+```
+
+Both tunnel modes need
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/),
+which ships as a Homebrew formula, a package for most Linux distributions, an
+MSI for Windows and a plain binary. `mlxsh setup` offers to install it when
+Homebrew is present.
+
+`--quick` needs no account, domain or configuration: cloudflared hands out a
+`*.trycloudflare.com` name and mlxsh reads it out of the log. Good for trying
+the thing; the name changes on every restart, and Cloudflare documents quick
+tunnels as testing-only without server-sent events, so do not build on them.
+
+For an address that never moves:
+
+```sh
+mlxsh tunnel setup llm.example.com   once: login, create, route DNS
+mlxsh tunnel                         start it, and the gateway if needed
+```
+
+Then anything that speaks the OpenAI API works, unchanged:
+
+```sh
+OPENAI_BASE_URL=https://llm.example.com/v1
+OPENAI_API_KEY=mlxsh-...              from: mlxsh gateway key
+```
+
+`/v1/models` there lists every loaded model, and a request naming one is routed
+to its port. Load another with `mlxsh lm` and it appears in the list, with no
+change on the client side. `mlxsh gateway key --new` rotates the key.
+
+Worth knowing before you expose anything:
+
+- The key is the only lock. Anything holding it uses your GPU.
+- The gateway has no TLS of its own. The tunnel provides it, which is why the
+  key is safe in transit. Binding the gateway to your LAN instead needs
+  `--expose`, and the key then crosses that network in cleartext.
+- A named tunnel needs a domain in a Cloudflare account. Quick tunnels are not
+  used: they hand out a new name each run and do not support server-sent
+  events, so streaming would break.
+- Cloudflare's proxy read timeout is 125 seconds and only Enterprise can raise
+  it. A streamed reply is fine because bytes start immediately; a long
+  **non-streaming** completion can return 524.
+- Your Mac has to be awake. `caffeinate -s mlxsh tunnel` keeps it up while the
+  tunnel runs.
+- `cloudflared service install` makes the tunnel survive reboots, if you want
+  that.
+
+Prefer something else? `config tunnel_cmd "..."` replaces cloudflared entirely,
+with `{port}` substituted: Tailscale Funnel for a permanent
+`<mac>.<tailnet>.ts.net` with no domain to buy (macOS needs the open-source
+build, not the App Store one), [chisel](https://github.com/jpillora/chisel) on
+a box you already have, or `ssh -R` to your own server.
+
 ## Commands
 
 ```
@@ -100,6 +185,8 @@ mlxsh <command> ...      run one command and exit
 
 lm [model]               serve text only
 vision [model]           serve multimodal
+gateway [stop|key]       an authenticated endpoint for other machines
+tunnel [setup <host>]    a permanent public address for the gateway
 stop [port|model|all]    stop a server and free the memory
 status [--json]          what is running
 bench [port|model] [n]   measure tok/s, saved to the registry
@@ -172,10 +259,15 @@ Flag beats environment beats registry beats default.
 | `reply_timeout` | `MLXSH_REPLY_TIMEOUT` | `600` |
 | `when_busy` | `MLXSH_WHEN_BUSY` | `new` |
 | `pin_model` | `MLXSH_PIN_MODEL` | `on` |
+| `gateway_port` | `MLXSH_GATEWAY_PORT` | `41377` |
+| `tunnel_name` | `MLXSH_TUNNEL_NAME` | `mlxsh` |
+| `tunnel_hostname` | `MLXSH_TUNNEL_HOSTNAME` | empty |
+| `tunnel_cmd` | `MLXSH_TUNNEL_CMD` | empty |
 | `status_bar` | `MLXSH_STATUS_BAR` | `on` |
 | `bar_interval` | `MLXSH_BAR_INTERVAL` | `2.0` |
 
-Also read: `MLXSH_HOME`, `MLXSH_PYTHON`, `MLXSH_DEBUG`, `HF_TOKEN`, `NO_COLOR`.
+Also read: `MLXSH_HOME`, `MLXSH_PYTHON`, `MLXSH_DEBUG`, `MLXSH_API_KEY`,
+`HF_TOKEN`, `NO_COLOR`.
 
 ## Troubleshooting
 
