@@ -1303,6 +1303,40 @@ class GatewayOverHttp(TempHome):
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
+    def raw(self, request_target, key=None, payload=None):
+        """urllib will not send a malformed request target, so speak HTTP."""
+        import socket
+        body = json.dumps(payload).encode() if payload is not None else b""
+        head = [f"POST {request_target} HTTP/1.1", "Host: x",
+                "Content-Type: application/json",
+                f"Content-Length: {len(body)}", "Connection: close"]
+        if key:
+            head.insert(1, f"Authorization: Bearer {key}")
+        s = socket.create_connection(self.gateway.server_address, timeout=10)
+        s.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + body)
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        status, _, rest = data.partition(b"\r\n\r\n")
+        return int(status.split()[1]), rest
+
+    def test_a_path_cannot_move_the_upstream_off_this_machine(self):
+        # "http://127.0.0.1:PORT" + "@elsewhere/..." parses as a host of
+        # "elsewhere", so the gateway would fetch from there and hand it back.
+        payload = {"model": "org/the-model", "messages": []}
+        code, _ = self.raw("@127.0.0.1:1/v1/chat/completions", self.key, payload)
+        self.assertEqual(code, 400)
+        self.assertEqual(self.seen, [])
+        self.assertEqual(self.raw("/v1/chat/completions", self.key, payload)[0],
+                         200)
+
+    def test_a_malformed_path_is_refused_before_the_key_is_checked(self):
+        self.assertEqual(self.raw("@127.0.0.1:1/healthz")[0], 400)
+
     def test_no_key_is_refused(self):
         code, body = self.call("/v1/models")
         self.assertEqual(code, 401)

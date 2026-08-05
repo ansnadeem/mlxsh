@@ -2010,6 +2010,11 @@ def gateway_handler():
             self.route("POST")
 
         def route(self, method: str):
+            # A path is pasted into the upstream URL, and one that does not
+            # start with "/" moves the host: "@elsewhere.com/v1/..." would send
+            # the request off this machine entirely.
+            if not self.path.startswith("/"):
+                return self.refuse(400, "malformed request path")
             if self.path.rstrip("/").endswith(("/healthz", "/health")):
                 return self.reply(200, {"status": "ok"})
             if not key_matches(self.headers.get("Authorization", "")):
