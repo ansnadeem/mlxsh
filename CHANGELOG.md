@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `mlxsh gateway`: one authenticated endpoint in front of every loaded model.
+  A bearer key, so any OpenAI client works with only a base URL and a key;
+  `/v1/models` lists what is loaded; requests are routed by model name to the
+  port holding it, with the upstream always receiving its own repo id.
+  Streaming is passed through chunk by chunk. Binds localhost unless told
+  otherwise.
+- `mlxsh tunnel`: a permanent public address through a named cloudflared
+  tunnel. `tunnel setup <hostname>` runs the login, create and DNS steps, each
+  skipped when already done; `tunnel` starts the gateway first, so nothing is
+  ever exposed without a key. `config tunnel_cmd` replaces cloudflared with
+  anything else.
+
+## Unreleased
+
 - `<command> -h` explains one command with examples, and never acts. It used
   to be taken as an argument: `lm --help` stopped a running server and started
   a model, `rm --help` tried to delete a model of that name, and

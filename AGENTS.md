@@ -218,6 +218,22 @@ export OPENAI_BASE_URL=http://127.0.0.1:41277/v1
 export OPENAI_API_KEY=not-needed
 ```
 
+## From another machine
+
+Everything above assumes the agent runs on the Mac. If it does not, it talks to
+the gateway instead of the model servers:
+
+```
+OPENAI_BASE_URL=https://<the tunnel hostname>/v1
+OPENAI_API_KEY=<from: mlxsh gateway key>
+```
+
+The gateway is an ordinary OpenAI endpoint: `Authorization: Bearer <key>`,
+`/v1/models` listing every loaded model, and requests routed by model name to
+the port holding it. `GET /healthz` answers without a key, for readiness
+checks. A model that is not loaded returns 404 naming what is available, rather
+than loading it.
+
 ## Running in isolation
 
 For tests, sandboxes or parallel agents that must not touch a user's setup:

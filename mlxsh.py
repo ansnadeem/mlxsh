@@ -71,6 +71,10 @@ DEFAULTS = {
     "reply_timeout": 600,
     "when_busy": "new",
     "pin_model": True,
+    "gateway_port": 41377,
+    "tunnel_name": "mlxsh",
+    "tunnel_hostname": "",
+    "tunnel_cmd": "",
     "status_bar": True,
     "bar_interval": 2.0,
     "serve_args": {"lm": ["--max-tokens", "4096"],
@@ -96,6 +100,13 @@ SETTINGS = {
                   "port already has a model: new, replace or ask"),
     "pin_model": ("MLXSH_PIN_MODEL", lambda v: boolean(v),
                   "a server sees only its own model, and cannot swap (on/off)"),
+    "gateway_port": ("MLXSH_GATEWAY_PORT", int,
+                     "port the authenticated gateway listens on"),
+    "tunnel_name": ("MLXSH_TUNNEL_NAME", str, "cloudflared tunnel name"),
+    "tunnel_hostname": ("MLXSH_TUNNEL_HOSTNAME", str,
+                        "public hostname routed to the gateway"),
+    "tunnel_cmd": ("MLXSH_TUNNEL_CMD", str,
+                   "run this instead of cloudflared, {port} is substituted"),
     "status_bar": ("MLXSH_STATUS_BAR", lambda v: boolean(v),
                    "pin a live line at the top of the shell (on/off)"),
     "bar_interval": ("MLXSH_BAR_INTERVAL", float,
@@ -1089,7 +1100,7 @@ def warmup(host: str, port: int, repo: str) -> bool:
         return False
 
 
-def log_path(port: int | None = None) -> Path:
+def log_path(port: int | str | None = None) -> Path:
     """One log per server, so several models do not interleave."""
     return (HOME / "logs" / f"{port}.log") if port else LOG
 
@@ -1362,6 +1373,19 @@ def print_servers(servers: list[dict], compact: bool = False):
                   f"{gb(weights)} of weights, machine has {gb(MEM_TOTAL)}"))
 
 
+def remote_json() -> dict:
+    """The gateway and tunnel, for scripts."""
+    gw, tun = gateway_state(), tunnel_state()
+    return {
+        "gateway": None if not gw else {
+            "endpoint": f"http://{gw['host']}:{gw['port']}/v1",
+            "port": gw["port"], "pid": gw["pid"]},
+        "tunnel": None if not tun else {
+            "endpoint": f"https://{tun['hostname']}/v1",
+            "hostname": tun["hostname"], "pid": tun["pid"]},
+    }
+
+
 def servers_json() -> str:
     """Machine-readable server list. The model field is the full repo id,
     which is what the endpoint expects."""
@@ -1399,6 +1423,14 @@ def models_json(reg: dict) -> str:
 
 
 def status(compact: bool = False):
+    tun = tunnel_state()
+    if tun:
+        print(f"  {green('tunnel'):<9} {bold('public'):<32}"
+              + dim(f"https://{tun['hostname']}/v1"))
+    gw = gateway_state()
+    if gw:
+        print(f"  {green('gateway'):<9} {bold('authenticated'):<32}"
+              + dim(f"http://{gw['host']}:{gw['port']}/v1"))
     servers = list_servers()
     if not servers:
         port = setting("port")
@@ -1862,6 +1894,439 @@ def setting_list(key: str) -> list[str]:
     return list(load_registry().get(key) or DEFAULTS[key])
 
 
+# --------------------------------------------------------------------- gateway
+#
+# The model servers have no authentication, which is why they only ever listen
+# on localhost. The gateway is the authenticated front door: it checks a bearer
+# key, then forwards to whichever loaded model the request asked for. Anything
+# reaching this machine from outside goes through here, never straight to a
+# model server.
+
+MAX_BODY = 32 * 1024 * 1024
+HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade",
+              "proxy-authenticate", "proxy-authorization", "te", "trailer"}
+
+
+def key_path() -> Path:
+    return HOME / "api.key"
+
+
+def api_key(new: bool = False) -> str:
+    """The bearer key, created on first use."""
+    import secrets
+
+    from_env = os.environ.get("MLXSH_API_KEY")
+    if from_env and not new:
+        return from_env
+    ensure_home()
+    path = key_path()
+    if new or not path.exists():
+        path.write_text("mlxsh-" + secrets.token_urlsafe(32) + "\n")
+        path.chmod(0o600)
+    return path.read_text().strip()
+
+
+def key_matches(header: str) -> bool:
+    import hmac
+
+    sent = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    return bool(sent) and hmac.compare_digest(sent, api_key())
+
+
+def gateway_target(body: bytes) -> tuple[dict | None, bytes]:
+    """The server a request is for, and the body with its model corrected."""
+    servers = list_servers()
+    if not servers:
+        return None, body
+    try:
+        payload = json.loads(body or b"{}")
+    except json.JSONDecodeError:
+        return (servers[0] if len(servers) == 1 else None), body
+    if not isinstance(payload, dict):
+        return None, body
+
+    wanted = str(payload.get("model") or "").strip()
+    if not wanted or wanted == "default_model":
+        chosen = servers[0]
+    else:
+        low = wanted.lower()
+        chosen = (next((s for s in servers if s.get("model") == wanted), None)
+                  or next((s for s in servers
+                           if low in (s.get("model") or "").lower()
+                           or low == s.get("mode")), None))
+    if not chosen:
+        return None, body
+    # upstream wants its own repo id, whatever name the client used
+    payload["model"] = chosen.get("model") or wanted
+    return chosen, json.dumps(payload).encode()
+
+
+def gateway_models() -> dict:
+    return {"object": "list", "data": [
+        {"id": s.get("model") or "", "object": "model",
+         "owned_by": s.get("engine", "mlx"),
+         "created": int(s.get("started", 0))} for s in list_servers()]}
+
+
+def gateway_handler():
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = f"mlxsh/{__version__}"
+
+        def log_message(self, fmt, *args):
+            sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
+
+        def reply(self, code: int, payload: dict):
+            body = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def refuse(self, code: int, message: str):
+            self.reply(code, {"error": {"message": message,
+                                        "type": "invalid_request_error"}})
+
+        def do_GET(self):
+            self.route("GET")
+
+        def do_POST(self):
+            self.route("POST")
+
+        def route(self, method: str):
+            if self.path.rstrip("/").endswith(("/healthz", "/health")):
+                return self.reply(200, {"status": "ok"})
+            if not key_matches(self.headers.get("Authorization", "")):
+                return self.refuse(401, "missing or invalid api key")
+            if self.path.rstrip("/").endswith("/models"):
+                return self.reply(200, gateway_models())
+
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                return self.refuse(413, "request too large")
+            body = self.rfile.read(length) if length else b""
+            target, body = gateway_target(body)
+            if not target:
+                loaded = [s.get("model") for s in list_servers()]
+                return self.refuse(404, "no model is loaded" if not loaded else
+                                   f"no loaded model matches, try one of {loaded}")
+            self.forward(method, target, body)
+
+        def forward(self, method: str, target: dict, body: bytes):
+            host = target.get("host", setting("host"))
+            url = f"http://{host}:{target['port']}{self.path}"
+            headers = {k: v for k, v in self.headers.items()
+                       if k.lower() not in HOP_BY_HOP
+                       and k.lower() not in ("authorization", "host",
+                                             "content-length")}
+            req = urllib.request.Request(url, data=body or None,
+                                         headers=headers, method=method)
+            try:
+                upstream = urllib.request.urlopen(
+                    req, timeout=setting("reply_timeout"))
+            except urllib.error.HTTPError as e:
+                return self.refuse(e.code,
+                                   e.read().decode(errors="replace")[:400])
+            except Exception as e:
+                return self.refuse(502, f"{target.get('model')} did not answer: {e}")
+
+            with upstream:
+                size = upstream.headers.get("Content-Length")
+                self.send_response(upstream.status)
+                self.send_header("Content-Type",
+                                 upstream.headers.get("Content-Type",
+                                                      "application/json"))
+                if size:
+                    self.send_header("Content-Length", size)
+                else:  # streaming: chunk it so tokens arrive as produced
+                    self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                try:
+                    while True:
+                        chunk = upstream.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk if size else
+                                         b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                        self.wfile.flush()
+                    if not size:
+                        self.wfile.write(b"0\r\n\r\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+    return Handler
+
+
+def run_gateway(host: str, port: int):
+    """Blocking. Started as a child process by the gateway command."""
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer((host, port), gateway_handler())
+    server.daemon_threads = True
+    server.serve_forever()
+
+
+def gateway_file() -> Path:
+    return HOME / "gateway.json"
+
+
+def gateway_state() -> dict | None:
+    path = gateway_file()
+    if not path.exists():
+        return None
+    try:
+        st = json.loads(path.read_text())
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+    if pid_alive(st.get("pid", -1)) and "mlxsh" in pid_command(st["pid"]):
+        return st
+    path.unlink(missing_ok=True)
+    return None
+
+
+def start_gateway(host: str | None = None, port: int | None = None,
+                  foreground: bool = False, expose: bool = False):
+    running = gateway_state()
+    if running:
+        print(green("  already running: ")
+              + f"http://{running['host']}:{running['port']}/v1")
+        return
+    host = host or setting("host")
+    port = int(port or setting("gateway_port"))
+    if host not in ("127.0.0.1", "localhost", "::1") and not expose:
+        warn(f"binding {host} would put the endpoint on your network")
+        note(dim("  the key would cross it in cleartext, since the gateway "
+                 "has no TLS"))
+        note(dim("  pass --expose if you meant it, or put a tunnel in front"))
+        return
+    if port_open(port, host):
+        warn(f"port {port} is already in use")
+        return
+
+    key = api_key()
+    if foreground:
+        print(dim(f"  gateway on http://{host}:{port}/v1"))
+        run_gateway(host, port)
+        return
+
+    ensure_home()
+    log = log_path("gateway")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log(log)
+    with log.open("a") as fh:
+        fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} start gateway ===\n")
+        fh.flush()
+        proc = subprocess.Popen(
+            [python_bin(), str(SELF), "--run-gateway", host, str(port)],
+            stdout=fh, stderr=fh, cwd=str(HOME), start_new_session=True)
+    gateway_file().write_text(json.dumps(
+        {"pid": proc.pid, "host": host, "port": port,
+         "started": time.time()}, indent=2) + "\n")
+
+    for _ in range(40):
+        if port_open(port, host):
+            print(bold("  gateway") + dim(f"   http://{host}:{port}/v1"))
+            print(dim(f"  key       {key}"))
+            print(dim("  clients send: Authorization: Bearer <key>"))
+            return
+        if proc.poll() is not None:
+            warn("the gateway exited at startup")
+            note(dim(tail_log(10, log)))
+            gateway_file().unlink(missing_ok=True)
+            return
+        time.sleep(0.25)
+    warn("the gateway is not listening yet, check: log gateway")
+
+
+def stop_gateway(quiet: bool = False):
+    st = gateway_state()
+    if not st:
+        if not quiet:
+            print(dim("  no gateway running"))
+        return
+    try:
+        os.killpg(os.getpgid(st["pid"]), signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(st["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    gateway_file().unlink(missing_ok=True)
+    print(green("  gateway stopped"))
+
+
+# ---------------------------------------------------------------------- tunnel
+#
+# A named Cloudflare tunnel gives the machine a hostname that never changes,
+# and every step of setting one up is a command, so mlxsh can run them. It
+# supervises cloudflared the way it supervises a model server, and points it at
+# the gateway rather than at a model, so nothing unauthenticated is ever
+# exposed.
+
+
+def cloudflared() -> str | None:
+    return shutil.which("cloudflared")
+
+
+def tunnel_file() -> Path:
+    return HOME / "tunnel.json"
+
+
+def tunnel_state() -> dict | None:
+    path = tunnel_file()
+    if not path.exists():
+        return None
+    try:
+        st = json.loads(path.read_text())
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+    if pid_alive(st.get("pid", -1)) and "cloudflared" in pid_command(st["pid"]):
+        return st
+    path.unlink(missing_ok=True)
+    return None
+
+
+def tunnel_commands(name: str, hostname: str, port: int,
+                    logged_in: bool, exists: bool) -> list[list[str]]:
+    """The setup steps still needed, in order. Empty when nothing is left."""
+    exe = cloudflared() or "cloudflared"
+    steps = []
+    if not logged_in:
+        steps.append([exe, "tunnel", "login"])
+    if not exists:
+        steps.append([exe, "tunnel", "create", name])
+    steps.append([exe, "tunnel", "route", "dns", "--overwrite-dns",
+                  name, hostname])
+    return steps
+
+
+def tunnel_run_command(name: str, port: int) -> list[str]:
+    custom = load_registry().get("tunnel_cmd") or ""
+    if custom:
+        return shlex.split(custom.format(port=port))
+    exe = cloudflared() or "cloudflared"
+    return [exe, "tunnel", "run", "--url", f"http://127.0.0.1:{port}", name]
+
+
+def tunnel_exists(name: str) -> bool:
+    exe = cloudflared()
+    if not exe:
+        return False
+    try:
+        out = subprocess.run([exe, "tunnel", "list"], capture_output=True,
+                             text=True, timeout=30).stdout
+    except Exception:
+        return False
+    return any(line.split()[1:2] == [name] for line in out.splitlines()[1:]
+               if line.split())
+
+
+def tunnel_setup(hostname: str):
+    if not cloudflared():
+        warn("cloudflared is not installed")
+        note(dim("  brew install cloudflared"))
+        return
+    if not hostname or "." not in hostname:
+        warn("give the hostname you want, for example: tunnel setup llm.example.com")
+        return
+    reg = load_registry()
+    name = reg.get("tunnel_name") or DEFAULTS["tunnel_name"]
+    logged_in = (Path.home() / ".cloudflared" / "cert.pem").exists()
+    steps = tunnel_commands(name, hostname, setting("gateway_port"),
+                            logged_in, tunnel_exists(name))
+    for cmd in steps:
+        print(dim("  " + " ".join(cmd)))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            # an existing DNS record is not a failure worth stopping for
+            if cmd[2:4] == ["route", "dns"]:
+                note(dim("  the record may already point here, carrying on"))
+                continue
+            warn(f"failed: {' '.join(cmd)}")
+            return
+    reg = load_registry()
+    reg["tunnel_hostname"] = hostname
+    save_registry(reg)
+    print(green(f"  {hostname} points at this machine"))
+    print(dim("  start it with: mlxsh tunnel"))
+
+
+def start_tunnel(foreground: bool = False):
+    if tunnel_state():
+        st = tunnel_state()
+        print(green("  already running: ") + f"https://{st['hostname']}/v1")
+        return
+    reg = load_registry()
+    hostname = setting("tunnel_hostname")
+    if not hostname:
+        warn("no hostname yet")
+        note(dim("  run: mlxsh tunnel setup <hostname>"))
+        return
+    if not cloudflared() and not reg.get("tunnel_cmd"):
+        warn("cloudflared is not installed")
+        note(dim("  brew install cloudflared"))
+        return
+
+    if not gateway_state():
+        print(dim("  starting the gateway first, so nothing is exposed "
+                  "without a key"))
+        start_gateway()
+        if not gateway_state():
+            return
+    port = int(gateway_state()["port"])
+    cmd = tunnel_run_command(reg.get("tunnel_name") or DEFAULTS["tunnel_name"],
+                             port)
+    if foreground:
+        os.execvp(cmd[0], cmd)
+
+    ensure_home()
+    log = log_path("tunnel")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log(log)
+    with log.open("a") as fh:
+        fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} start tunnel ===\n")
+        fh.flush()
+        proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=str(HOME),
+                                start_new_session=True)
+    tunnel_file().write_text(json.dumps(
+        {"pid": proc.pid, "hostname": hostname, "port": port,
+         "started": time.time()}, indent=2) + "\n")
+
+    time.sleep(2)
+    if proc.poll() is not None:
+        warn("the tunnel exited at startup")
+        note(dim(tail_log(15, log)))
+        tunnel_file().unlink(missing_ok=True)
+        return
+    print(bold("  tunnel") + dim(f"   https://{hostname}/v1"))
+    print(dim(f"  key      {api_key()}"))
+    print(yellow("  this endpoint is now reachable from the internet, "
+                 "and the key is the only lock"))
+
+
+def stop_tunnel(quiet: bool = False):
+    st = tunnel_state()
+    if not st:
+        if not quiet:
+            print(dim("  no tunnel running"))
+        return
+    try:
+        os.killpg(os.getpgid(st["pid"]), signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(st["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    tunnel_file().unlink(missing_ok=True)
+    print(green("  tunnel stopped") + dim(f"   {st['hostname']} still points here"))
+
+
 # -------------------------------------------------------------------- commands
 
 
@@ -1924,6 +2389,14 @@ def help_text() -> str:
                              top of the shell
     doctor                   versions, paths, machine
     setup                    install the MLX packages where mlxsh runs
+
+  {bold('reaching it from elsewhere')}
+    gateway                  one authenticated endpoint in front of every
+                             loaded model. Prints the bearer key
+    gateway key [--new]      show or rotate the key
+    tunnel setup <hostname>  point a hostname at this machine, once
+    tunnel                   start the tunnel, and the gateway if needed
+    gateway stop, tunnel stop
 
   {bold('the shell')}
     Every command works either way. The shell adds the things that only make
@@ -2050,6 +2523,26 @@ class Ctl:
     def do_status(self, a):
         print(servers_json()) if "--json" in a else status()
     def do_doctor(self, a): doctor()
+
+    def do_gateway(self, a):
+        a = split_flags(a)
+        if a and a[0] in ("stop", "off"):
+            return stop_gateway()
+        if a and a[0] == "key":
+            print("  " + api_key(new="--new" in a))
+            return
+        start_gateway(OVERRIDES.get("host"), OVERRIDES.get("port"),
+                      foreground="--foreground" in a,
+                      expose="--expose" in a)
+
+    def do_tunnel(self, a):
+        a = split_flags(a)
+        if a and a[0] in ("stop", "off"):
+            return stop_tunnel()
+        if a and a[0] == "setup":
+            return tunnel_setup(a[1] if len(a) > 1
+                                else setting("tunnel_hostname"))
+        start_tunnel(foreground="--foreground" in a)
 
     def do_setup(self, a):
         setup(yes="-y" in a or "--yes" in a)
@@ -2395,6 +2888,15 @@ COMMAND_HELP = {
                "Show settings and where each value comes from, or change one.",
                ["mlxsh config", "mlxsh config port 8080",
                 "mlxsh config reset port"]),
+    "gateway": ("gateway [stop] [key [--new]] [--port N] [--host ADDR] [--expose]",
+                "An authenticated endpoint in front of every loaded model: one "
+                "URL, a bearer key, routed by model name.",
+                ["mlxsh gateway", "mlxsh gateway key", "mlxsh gateway stop"]),
+    "tunnel": ("tunnel [setup <hostname>] [stop]",
+               "A permanent public address for the gateway, through a named "
+               "cloudflared tunnel.",
+               ["mlxsh tunnel setup llm.example.com", "mlxsh tunnel",
+                "mlxsh tunnel stop"]),
     "setup": ("setup [-y]",
               "Install mlx-lm, mlx-vlm and huggingface_hub where mlxsh runs.",
               ["mlxsh setup"]),
@@ -2429,7 +2931,8 @@ ALIASES = {
 }
 COMMANDS = ["help", "shell", "lm", "vision", "serve", "stop", "status", "bench",
             "log", "ls", "models", "use", "rm", "edit", "config", "browse",
-            "get", "chat", "ask", "doctor", "setup", "exit"]
+            "get", "chat", "ask", "doctor", "setup", "gateway", "tunnel",
+            "exit"]
 
 
 def dispatch(ctl: Ctl, line: str, interactive: bool) -> bool:
@@ -2629,6 +3132,8 @@ PALETTE = [
     ("config", "ports, host, org, memory limits"),
     ("log", "tail the server log"),
     ("doctor", "versions, paths, machine"),
+    ("gateway", "an authenticated endpoint for clients off this machine"),
+    ("tunnel", "a permanent public address for the gateway"),
     ("edit", "edit the registry"),
     ("help", "full command list"),
     ("exit", "leave the shell"),
@@ -2784,6 +3289,9 @@ NO_REEXEC = {"help", "--help", "-h", "?", "h", "version", "--version", "-V"}
 
 
 def main(argv: list[str]):
+    if argv[:1] == ["--run-gateway"]:   # the child started by the gateway
+        run_gateway(argv[1], int(argv[2]))
+        return
     if not argv:
         ensure_interpreter()
         print(help_text())
