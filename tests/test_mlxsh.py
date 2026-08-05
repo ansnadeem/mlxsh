@@ -1096,6 +1096,40 @@ class TunnelCommands(TempHome):
                          ["tailscale", "funnel", "--bg", "--https=443",
                           "localhost:41377"])
 
+    def test_the_hint_names_the_missing_piece(self):
+        saved = mlxsh.cloudflared
+        try:
+            mlxsh.cloudflared = lambda: None
+            missing = " ".join(mlxsh.tunnel_hint())
+            self.assertIn("brew install cloudflared", missing)
+            mlxsh.cloudflared = lambda: "/opt/homebrew/bin/cloudflared"
+            present = " ".join(mlxsh.tunnel_hint())
+            self.assertIn("tunnel --quick", present)
+            self.assertNotIn("brew install", present)
+        finally:
+            mlxsh.cloudflared = saved
+
+    def test_quick_needs_no_hostname_or_account(self):
+        cmd = mlxsh.tunnel_run_command("mlxsh", 41377, quick=True)
+        self.assertEqual(cmd[1:], ["tunnel", "--url", "http://127.0.0.1:41377"])
+        self.assertNotIn("run", cmd)
+
+    def test_the_address_is_read_out_of_the_log(self):
+        log = ("2026-08-04 INF Thank you for trying Cloudflare Tunnel.\n"
+               "2026-08-04 INF |  https://loud-quiet-mango-tree.trycloudflare.com"
+               "  |\n2026-08-04 INF Registered tunnel connection\n")
+        self.assertEqual(mlxsh.url_from_log(log),
+                         "https://loud-quiet-mango-tree.trycloudflare.com")
+
+    def test_a_tailscale_address_is_read_too(self):
+        self.assertEqual(
+            mlxsh.url_from_log("Available within your tailnet:\n"
+                               "https://ans-mac.tail1234.ts.net/\n"),
+            "https://ans-mac.tail1234.ts.net/")
+
+    def test_no_address_in_the_log(self):
+        self.assertIsNone(mlxsh.url_from_log("starting up\nconnected\n"))
+
     def test_starting_without_a_hostname_explains_itself(self):
         with captured() as (_out, err):
             mlxsh.start_tunnel()

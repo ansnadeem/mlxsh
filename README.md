@@ -119,6 +119,17 @@ your app  ->  cloudflare edge  ->  cloudflared  ->  gateway  ->  model servers
 
 ```sh
 mlxsh gateway                        prints the URL and the key
+mlxsh tunnel --quick                 a throwaway public address, right away
+```
+
+`--quick` needs no account, domain or configuration: cloudflared hands out a
+`*.trycloudflare.com` name and mlxsh reads it out of the log. Good for trying
+the thing; the name changes on every restart, and Cloudflare documents quick
+tunnels as testing-only without server-sent events, so do not build on them.
+
+For an address that never moves:
+
+```sh
 mlxsh tunnel setup llm.example.com   once: login, create, route DNS
 mlxsh tunnel                         start it, and the gateway if needed
 ```

@@ -1381,8 +1381,9 @@ def remote_json() -> dict:
             "endpoint": f"http://{gw['host']}:{gw['port']}/v1",
             "port": gw["port"], "pid": gw["pid"]},
         "tunnel": None if not tun else {
-            "endpoint": f"https://{tun['hostname']}/v1",
-            "hostname": tun["hostname"], "pid": tun["pid"]},
+            "endpoint": f"{tun.get('url') or 'https://' + tun['hostname']}/v1",
+            "hostname": tun.get("hostname", ""), "pid": tun["pid"],
+            "quick": bool(tun.get("quick"))},
     }
 
 
@@ -1426,7 +1427,7 @@ def status(compact: bool = False):
     tun = tunnel_state()
     if tun:
         print(f"  {green('tunnel'):<9} {bold('public'):<32}"
-              + dim(f"https://{tun['hostname']}/v1"))
+              + dim(f"{tun.get('url') or 'https://' + tun['hostname']}/v1"))
     gw = gateway_state()
     if gw:
         print(f"  {green('gateway'):<9} {bold('authenticated'):<32}"
@@ -2133,6 +2134,8 @@ def start_gateway(host: str | None = None, port: int | None = None,
             print(bold("  gateway") + dim(f"   http://{host}:{port}/v1"))
             print(dim(f"  key       {key}"))
             print(dim("  clients send: Authorization: Bearer <key>"))
+            for line in tunnel_hint():
+                print(dim(line))
             return
         if proc.poll() is not None:
             warn("the gateway exited at startup")
@@ -2173,6 +2176,15 @@ def cloudflared() -> str | None:
     return shutil.which("cloudflared")
 
 
+def tunnel_hint() -> list[str]:
+    """What to say next about reaching this machine from elsewhere."""
+    if cloudflared():
+        return ["  from another machine: mlxsh tunnel --quick",
+                "  or a permanent address: mlxsh tunnel setup <hostname>"]
+    return ["  to reach it from another machine you also need cloudflared",
+            "  brew install cloudflared, then: mlxsh tunnel --quick"]
+
+
 def tunnel_file() -> Path:
     return HOME / "tunnel.json"
 
@@ -2206,12 +2218,24 @@ def tunnel_commands(name: str, hostname: str, port: int,
     return steps
 
 
-def tunnel_run_command(name: str, port: int) -> list[str]:
+def tunnel_run_command(name: str, port: int, quick: bool = False) -> list[str]:
     custom = load_registry().get("tunnel_cmd") or ""
-    if custom:
+    if custom and not quick:
         return shlex.split(custom.format(port=port))
     exe = cloudflared() or "cloudflared"
+    if quick:  # no account, no domain, a new name every time
+        return [exe, "tunnel", "--url", f"http://127.0.0.1:{port}"]
     return [exe, "tunnel", "run", "--url", f"http://127.0.0.1:{port}", name]
+
+
+PUBLIC_URL = re.compile(r"https://[\w.-]+\.(?:trycloudflare\.com|ts\.net)\S*")
+
+
+def url_from_log(text: str) -> str | None:
+    """Quick tunnels and some other providers only announce their address in
+    their own output."""
+    found = PUBLIC_URL.findall(text)
+    return found[-1] if found else None
 
 
 def tunnel_exists(name: str) -> bool:
@@ -2257,16 +2281,17 @@ def tunnel_setup(hostname: str):
     print(dim("  start it with: mlxsh tunnel"))
 
 
-def start_tunnel(foreground: bool = False):
+def start_tunnel(foreground: bool = False, quick: bool = False):
     if tunnel_state():
         st = tunnel_state()
-        print(green("  already running: ") + f"https://{st['hostname']}/v1")
+        print(green("  already running: ") + f"{st['url']}/v1")
         return
     reg = load_registry()
-    hostname = setting("tunnel_hostname")
-    if not hostname:
+    hostname = "" if quick else setting("tunnel_hostname")
+    if not hostname and not quick and not reg.get("tunnel_cmd"):
         warn("no hostname yet")
         note(dim("  run: mlxsh tunnel setup <hostname>"))
+        note(dim("  or, for a throwaway address: mlxsh tunnel --quick"))
         return
     if not cloudflared() and not reg.get("tunnel_cmd"):
         warn("cloudflared is not installed")
@@ -2281,7 +2306,7 @@ def start_tunnel(foreground: bool = False):
             return
     port = int(gateway_state()["port"])
     cmd = tunnel_run_command(reg.get("tunnel_name") or DEFAULTS["tunnel_name"],
-                             port)
+                             port, quick)
     if foreground:
         os.execvp(cmd[0], cmd)
 
@@ -2294,20 +2319,35 @@ def start_tunnel(foreground: bool = False):
         fh.flush()
         proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=str(HOME),
                                 start_new_session=True)
-    tunnel_file().write_text(json.dumps(
-        {"pid": proc.pid, "hostname": hostname, "port": port,
-         "started": time.time()}, indent=2) + "\n")
+    url = f"https://{hostname}" if hostname else ""
+    for _ in range(40):   # a quick tunnel only announces its address in the log
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            warn("the tunnel exited at startup")
+            note(dim(tail_log(15, log)))
+            tunnel_file().unlink(missing_ok=True)
+            return
+        if url:
+            break
+        url = url_from_log(tail_log(200, log)) or ""
+        if url:
+            break
+    if not url:
+        warn("the tunnel started but announced no address, check: log tunnel")
+        url = "unknown"
 
-    time.sleep(2)
-    if proc.poll() is not None:
-        warn("the tunnel exited at startup")
-        note(dim(tail_log(15, log)))
-        tunnel_file().unlink(missing_ok=True)
-        return
-    print(bold("  tunnel") + dim(f"   https://{hostname}/v1"))
+    tunnel_file().write_text(json.dumps(
+        {"pid": proc.pid, "hostname": hostname, "url": url, "port": port,
+         "quick": quick, "started": time.time()}, indent=2) + "\n")
+    print(bold("  tunnel") + dim(f"   {url}/v1"))
     print(dim(f"  key      {api_key()}"))
     print(yellow("  this endpoint is now reachable from the internet, "
                  "and the key is the only lock"))
+    if quick:
+        print(yellow("  a quick tunnel has no streaming: server-sent events "
+                     "are unsupported"))
+        note(dim("  the address also changes every restart. For a permanent "
+                 "one: tunnel setup <hostname>"))
 
 
 def stop_tunnel(quiet: bool = False):
@@ -2324,7 +2364,9 @@ def stop_tunnel(quiet: bool = False):
         except OSError:
             pass
     tunnel_file().unlink(missing_ok=True)
-    print(green("  tunnel stopped") + dim(f"   {st['hostname']} still points here"))
+    tail = (f"   {st['hostname']} still points here" if st.get("hostname")
+            else "")
+    print(green("  tunnel stopped") + dim(tail))
 
 
 # -------------------------------------------------------------------- commands
@@ -2396,6 +2438,8 @@ def help_text() -> str:
     gateway key [--new]      show or rotate the key
     tunnel setup <hostname>  point a hostname at this machine, once
     tunnel                   start the tunnel, and the gateway if needed
+    tunnel --quick           a throwaway address, no account or domain, but
+                             no streaming and a new name each time
     gateway stop, tunnel stop
 
   {bold('the shell')}
@@ -2542,7 +2586,8 @@ class Ctl:
         if a and a[0] == "setup":
             return tunnel_setup(a[1] if len(a) > 1
                                 else setting("tunnel_hostname"))
-        start_tunnel(foreground="--foreground" in a)
+        start_tunnel(foreground="--foreground" in a,
+                     quick="--quick" in a or (a and a[0] == "quick"))
 
     def do_setup(self, a):
         setup(yes="-y" in a or "--yes" in a)
@@ -2892,11 +2937,11 @@ COMMAND_HELP = {
                 "An authenticated endpoint in front of every loaded model: one "
                 "URL, a bearer key, routed by model name.",
                 ["mlxsh gateway", "mlxsh gateway key", "mlxsh gateway stop"]),
-    "tunnel": ("tunnel [setup <hostname>] [stop]",
+    "tunnel": ("tunnel [setup <hostname>] [--quick] [stop]",
                "A permanent public address for the gateway, through a named "
                "cloudflared tunnel.",
                ["mlxsh tunnel setup llm.example.com", "mlxsh tunnel",
-                "mlxsh tunnel stop"]),
+                "mlxsh tunnel --quick", "mlxsh tunnel stop"]),
     "setup": ("setup [-y]",
               "Install mlx-lm, mlx-vlm and huggingface_hub where mlxsh runs.",
               ["mlxsh setup"]),
@@ -3262,6 +3307,18 @@ def setup(yes: bool = False):
         # this process is still running the interpreter that lacked them
         print(dim("  start mlxsh again to use it"))
     print(dim("  check it with: mlxsh doctor, then: mlxsh browse"))
+
+    if not cloudflared():
+        print()
+        print(dim("  optional: cloudflared, only needed to reach this machine"))
+        print(dim("  from elsewhere, through mlxsh gateway and mlxsh tunnel"))
+        brew = shutil.which("brew")
+        if brew and not yes and confirm("  install cloudflared now?", False):
+            subprocess.run([brew, "install", "cloudflared"])
+        elif not brew:
+            print(dim("  https://github.com/cloudflare/cloudflared"))
+        else:
+            print(dim("  brew install cloudflared"))
 
 
 def check_deps():

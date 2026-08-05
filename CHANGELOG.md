@@ -8,6 +8,10 @@
   port holding it, with the upstream always receiving its own repo id.
   Streaming is passed through chunk by chunk. Binds localhost unless told
   otherwise.
+- `mlxsh tunnel --quick` for a throwaway address with no account, domain or
+  configuration, reading the assigned name out of cloudflared's own output.
+  `setup` and `gateway` both mention cloudflared when it is missing, and offer
+  to install it.
 - `mlxsh tunnel`: a permanent public address through a named cloudflared
   tunnel. `tunnel setup <hostname>` runs the login, create and DNS steps, each
   skipped when already done; `tunnel` starts the gateway first, so nothing is
