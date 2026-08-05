@@ -26,11 +26,8 @@ Show
 Type "# serve a model on this Mac" Sleep 300ms Enter Sleep 400ms
 Type "./mlxsh.py lm gemma-4-26B" Sleep 300ms Enter Sleep 11s
 
-Type "# an authenticated endpoint in front of it" Sleep 300ms Enter Sleep 400ms
-Type "./mlxsh.py gateway" Sleep 300ms Enter Sleep 4s
-
-Type "# and a public address: no account, no domain" Sleep 300ms Enter Sleep 400ms
-Type "./mlxsh.py tunnel --quick" Sleep 300ms Enter Sleep 14s
+Type "# one command for a public address: no account, no domain" Sleep 300ms Enter Sleep 400ms
+Type "./mlxsh.py tunnel --quick" Sleep 300ms Enter Sleep 16s
 
 Type "URL=$(./mlxsh.py tunnel url); KEY=$(./mlxsh.py gateway key)" Sleep 300ms Enter Sleep 2s
 
