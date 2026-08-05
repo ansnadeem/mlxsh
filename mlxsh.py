@@ -2172,6 +2172,10 @@ def stop_gateway(quiet: bool = False):
 # exposed.
 
 
+CLOUDFLARED_DOCS = ("https://developers.cloudflare.com/cloudflare-one/"
+                    "connections/connect-networks/downloads/")
+
+
 def cloudflared() -> str | None:
     return shutil.which("cloudflared")
 
@@ -2182,7 +2186,8 @@ def tunnel_hint() -> list[str]:
         return ["  from another machine: mlxsh tunnel --quick",
                 "  or a permanent address: mlxsh tunnel setup <hostname>"]
     return ["  to reach it from another machine you also need cloudflared",
-            "  brew install cloudflared, then: mlxsh tunnel --quick"]
+            f"  {CLOUDFLARED_DOCS}",
+            "  then: mlxsh tunnel --quick"]
 
 
 def tunnel_file() -> Path:
@@ -2254,7 +2259,7 @@ def tunnel_exists(name: str) -> bool:
 def tunnel_setup(hostname: str):
     if not cloudflared():
         warn("cloudflared is not installed")
-        note(dim("  brew install cloudflared"))
+        note(dim(f"  {CLOUDFLARED_DOCS}"))
         return
     if not hostname or "." not in hostname:
         warn("give the hostname you want, for example: tunnel setup llm.example.com")
@@ -2295,7 +2300,7 @@ def start_tunnel(foreground: bool = False, quick: bool = False):
         return
     if not cloudflared() and not reg.get("tunnel_cmd"):
         warn("cloudflared is not installed")
-        note(dim("  brew install cloudflared"))
+        note(dim(f"  {CLOUDFLARED_DOCS}"))
         return
 
     if not gateway_state():
@@ -2433,7 +2438,8 @@ def help_text() -> str:
     setup                    install the MLX packages where mlxsh runs
 
   {bold('reaching it from elsewhere')}
-    needs cloudflared: brew install cloudflared
+    needs cloudflared, see
+    https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
 
     gateway                  one authenticated endpoint in front of every
                              loaded model. Prints the bearer key
@@ -2938,14 +2944,15 @@ COMMAND_HELP = {
     "gateway": ("gateway [stop] [key [--new]] [--port N] [--host ADDR] [--expose]",
                 "An authenticated endpoint in front of every loaded model: one\n"
                 "URL, a bearer key, routed by model name. It listens on this\n"
-                "machine only. Reaching it from anywhere else needs cloudflared\n"
-                "(brew install cloudflared) and mlxsh tunnel.",
+                "machine only. Reaching it from anywhere else needs\n"
+                "cloudflared and mlxsh tunnel.",
                 ["mlxsh gateway", "mlxsh gateway key", "mlxsh gateway stop"]),
     "tunnel": ("tunnel [setup <hostname>] [--quick] [stop]",
                "A public address for the gateway, through cloudflared, which\n"
-               "must be installed (brew install cloudflared). setup routes a\n"
-               "hostname you own and keeps it; --quick borrows a throwaway one\n"
-               "with no account, but changes on every restart.",
+               "must be installed. setup routes a hostname you own and keeps\n"
+               "it; --quick borrows a throwaway one with no account, but it\n"
+               "changes on every restart.\n"
+               f"  {CLOUDFLARED_DOCS}",
                ["mlxsh tunnel setup llm.example.com", "mlxsh tunnel",
                 "mlxsh tunnel --quick", "mlxsh tunnel stop"]),
     "setup": ("setup [-y]",
@@ -3322,10 +3329,8 @@ def setup(yes: bool = False):
         brew = shutil.which("brew")
         if brew and not yes and confirm("  install cloudflared now?", False):
             subprocess.run([brew, "install", "cloudflared"])
-        elif not brew:
-            print(dim("  https://github.com/cloudflare/cloudflared"))
         else:
-            print(dim("  brew install cloudflared"))
+            print(dim(f"  {CLOUDFLARED_DOCS}"))
 
 
 def check_deps():

@@ -122,6 +122,12 @@ mlxsh gateway                        prints the URL and the key
 mlxsh tunnel --quick                 a throwaway public address, right away
 ```
 
+Both tunnel modes need
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/),
+which ships as a Homebrew formula, a package for most Linux distributions, an
+MSI for Windows and a plain binary. `mlxsh setup` offers to install it when
+Homebrew is present.
+
 `--quick` needs no account, domain or configuration: cloudflared hands out a
 `*.trycloudflare.com` name and mlxsh reads it out of the log. Good for trying
 the thing; the name changes on every restart, and Cloudflare documents quick

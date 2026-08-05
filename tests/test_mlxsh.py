@@ -1100,17 +1100,21 @@ class TunnelCommands(TempHome):
         for cmd in ("gateway", "tunnel"):
             _usage, what, _examples = mlxsh.COMMAND_HELP[cmd]
             self.assertIn("cloudflared", what, cmd)
+            self.assertNotIn("brew", what, cmd)
+        self.assertIn(mlxsh.CLOUDFLARED_DOCS, mlxsh.COMMAND_HELP["tunnel"][1])
 
     def test_the_hint_names_the_missing_piece(self):
         saved = mlxsh.cloudflared
         try:
             mlxsh.cloudflared = lambda: None
             missing = " ".join(mlxsh.tunnel_hint())
-            self.assertIn("brew install cloudflared", missing)
+            self.assertIn("cloudflared", missing)
+            self.assertIn(mlxsh.CLOUDFLARED_DOCS, missing)
+            self.assertNotIn("brew", missing)   # not everyone has homebrew
             mlxsh.cloudflared = lambda: "/opt/homebrew/bin/cloudflared"
             present = " ".join(mlxsh.tunnel_hint())
             self.assertIn("tunnel --quick", present)
-            self.assertNotIn("brew install", present)
+            self.assertNotIn(mlxsh.CLOUDFLARED_DOCS, present)
         finally:
             mlxsh.cloudflared = saved
 
@@ -1327,7 +1331,8 @@ class HelpAndStreams(TempHome):
             self.assertIn(cmd, mlxsh.COMMAND_HELP, cmd)
             usage, what, examples = mlxsh.COMMAND_HELP[cmd]
             self.assertTrue(usage.startswith(cmd), cmd)
-            self.assertTrue(what.endswith("."), cmd)
+            # a full stop, or a link on the last line
+            self.assertTrue(what.endswith((".", "/")), cmd)
             self.assertTrue(all(e.startswith("mlxsh ") for e in examples), cmd)
 
     def test_diagnostics_go_to_stderr(self):
