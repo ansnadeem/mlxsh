@@ -7,7 +7,8 @@ Run local [MLX](https://github.com/ml-explore/mlx) models on Apple silicon.
 mlxsh serves a model at an OpenAI-compatible endpoint, keeps several loaded at
 once, switches a model between text-only and multimodal, and browses and
 downloads from the Hugging Face Hub. One file, standard library only; it drives
-`mlx-lm` and `mlx-vlm`.
+`mlx-lm` and `mlx-vlm`. Bring-Your-Own-Model (BYOM) everywhere for all your LLM needs
+via seamless cloudfared integration allowing you to expose your model on the internet. 
 
 ![a model served locally, then reached over the internet](demo.gif)
 
