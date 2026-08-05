@@ -2255,6 +2255,16 @@ def url_from_log(text: str) -> str | None:
     return found[-1] if found else None
 
 
+def log_since(path: Path, offset: int) -> str:
+    """Only what this run wrote. The log keeps earlier runs, and an old address
+    in the tail would be read as the new one."""
+    if not path.exists():
+        return ""
+    with path.open("rb") as fh:
+        fh.seek(offset)
+        return fh.read().decode(errors="replace")
+
+
 def tunnel_exists(name: str) -> bool:
     exe = cloudflared()
     if not exe:
@@ -2334,6 +2344,7 @@ def start_tunnel(foreground: bool = False, quick: bool = False):
     with log.open("a") as fh:
         fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} start tunnel ===\n")
         fh.flush()
+        start_at = fh.tell()
         proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=str(HOME),
                                 start_new_session=True)
     url = f"https://{hostname}" if hostname else ""
@@ -2346,7 +2357,7 @@ def start_tunnel(foreground: bool = False, quick: bool = False):
             return
         if url:
             break
-        url = url_from_log(tail_log(200, log)) or ""
+        url = url_from_log(log_since(log, start_at)) or ""
         if url:
             break
     if not url:
@@ -2361,8 +2372,8 @@ def start_tunnel(foreground: bool = False, quick: bool = False):
     print(yellow("  this endpoint is now reachable from the internet, "
                  "and the key is the only lock"))
     if quick:
-        print(yellow("  a quick tunnel has no streaming: server-sent events "
-                     "are unsupported"))
+        print(yellow("  Cloudflare does not support server-sent events on a "
+                     "quick tunnel, so treat streaming as unreliable"))
         note(dim("  the address also changes every restart. For a permanent "
                  "one: tunnel setup <hostname>"))
 

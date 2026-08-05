@@ -1178,6 +1178,21 @@ class TunnelCommands(TempHome):
     def test_no_address_in_the_log(self):
         self.assertIsNone(mlxsh.url_from_log("starting up\nconnected\n"))
 
+    def test_an_earlier_run_in_the_log_is_not_read_as_this_one(self):
+        log = mlxsh.log_path("tunnel")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("=== earlier run ===\n"
+                       "INF |  https://gone-old-dead-name.trycloudflare.com  |\n")
+        with log.open("a") as fh:
+            fh.write("=== this run ===\n")
+            fh.flush()
+            start_at = fh.tell()
+            fh.write("INF |  https://fresh-new-live-name.trycloudflare.com  |\n")
+        self.assertEqual(mlxsh.url_from_log(mlxsh.log_since(log, start_at)),
+                         "https://fresh-new-live-name.trycloudflare.com")
+        self.assertIsNone(
+            mlxsh.url_from_log(mlxsh.log_since(log, log.stat().st_size)))
+
     def test_starting_without_a_hostname_explains_itself(self):
         with captured() as (_out, err):
             mlxsh.start_tunnel()
